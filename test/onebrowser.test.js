@@ -8,7 +8,7 @@ import { apiKeyEnv, OneBrowser, QuotaError, sessionOptions } from '../src/index.
 import { ADAPTERS } from '../src/providers/index.js';
 import { utcMonth } from '../src/providers/month.js';
 
-const { hyperbrowser, kernel, lightpanda, steel, tinyfish } = ADAPTERS;
+const { anchor, hyperbrowser, kernel, lightpanda, steel, tinyfish } = ADAPTERS;
 const options = { proxyCountry: null, idleTimeoutSec: 60, maxDurationMs: 15 * 60_000 };
 
 /** Runs fn with fetch answered offline by answer(url) → { status, body, headers }: what fn returned, and the requests it made */
@@ -61,7 +61,7 @@ test('a OneBrowser names its client; settings and adapters must be for known pro
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { nope: {} } }), /no adapter for provider nope/);
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', adapters: { half: { createSession() {} } } }), /half: its adapter lacks releaseSession, sessionUsage, quota/);
   const b = new OneBrowser({ client: 'x', ledgerPath: ':memory:' });
-  assert.deepEqual(b.providers, ['tinyfish', 'steel', 'hyperbrowser', 'lightpanda', 'kernel']);
+  assert.deepEqual(b.providers, ['tinyfish', 'steel', 'hyperbrowser', 'lightpanda', 'kernel', 'anchor']);
   assert.throws(() => b.checkReady('nope'), /unknown provider nope/);
 });
 
@@ -294,4 +294,34 @@ test("Kernel quota is the monthly hours less the uptime of this month's sessions
   );
   assert.deepEqual(q, { remaining: kernel.defaults.monthlyHours - 2, unit: 'hours', renewsAt: month.next });
   assert.deepEqual(requests.map((r) => new URL(r.url).search), ['?status=all&limit=100&offset=0', '?status=all&limit=100&offset=100', '?status=all&limit=100&offset=200']);
+});
+
+test('an Anchor session takes the idle timeout rounded down to whole minutes, at least 1, without recording, and is deleted; 402 is out of credits; ended sessions report their usage', async () => {
+  const settings = anchor.defaults;
+  const created = { data: { id: 'a1', cdp_url: 'wss://connect.anchorbrowser.io?sessionId=a1&rt=x', live_view_url: 'https://live' } };
+  const { requests } = await withFetch(
+    (url) => ({ body: url.endsWith('/sessions') ? created : { data: { status: 'success' } } }),
+    async () => {
+      assert.deepEqual(await anchor.createSession(settings, 'key', { ...options, idleTimeoutSec: 150, proxyCountry: 'DE' }), { id: 'a1', cdpUrl: created.data.cdp_url, egress: 'proxy DE' });
+      assert.deepEqual(await anchor.createSession(settings, 'key', { ...options, idleTimeoutSec: 30 }), { id: 'a1', cdpUrl: created.data.cdp_url, egress: 'datacenter IP' });
+      await anchor.releaseSession(settings, 'key', { id: 'a1' });
+    },
+  );
+  const post = (session) => ({ method: 'POST', url: `${settings.apiBase}/sessions`, body: { session: { recording: { active: false }, ...session } } });
+  assert.deepEqual(requests, [
+    post({ timeout: { idle_timeout: 2, max_duration: 15 }, proxy: { active: true, type: 'anchor_proxy', country_code: 'de' } }),
+    post({ timeout: { idle_timeout: 1, max_duration: 15 } }),
+    { method: 'DELETE', url: `${settings.apiBase}/sessions/a1`, body: undefined },
+  ]);
+  await withFetch(() => ({ status: 402, body: { error: 'Insufficient credits balance' } }), () => assert.rejects(anchor.createSession(settings, 'key', options), QuotaError));
+
+  const records = { done: { status: 'completed', duration: 126, proxy_bytes: 2048 }, running: { status: 'running', duration: 0, proxy_bytes: 0 } };
+  const { value: usage } = await withFetch(
+    (url) => ({ body: { data: records[new URL(url).pathname.split('/').pop()] } }),
+    () => anchor.sessionUsage(settings, 'key', ['done', 'running'].map((id) => ({ id }))),
+  );
+  assert.deepEqual(usage, [{ id: 'done', durationMs: 126_000, proxyBytes: 2048 }]);
+
+  const { value: q } = await withFetch(() => ({ body: { credits: 4.97, credits_used: 0.03, tier: 'monthly_free' } }), () => anchor.quota(settings, 'key'));
+  assert.deepEqual(q, { remaining: 4.97, unit: 'credits' });
 });

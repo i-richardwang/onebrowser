@@ -1,8 +1,8 @@
 {
   "name": "onebrowser",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "One interface to remote browser providers: sessions by provider name, a usage ledger, account quotas",
-  "keywords": ["browser", "remote-browser", "cdp", "playwright", "steel", "hyperbrowser", "lightpanda", "kernel", "tinyfish"],
+  "keywords": ["browser", "remote-browser", "cdp", "playwright", "steel", "hyperbrowser", "lightpanda", "kernel", "tinyfish", "anchorbrowser"],
   "license": "MIT",
   "author": "Richard Wang",
   "repository": { "type": "git", "url": "git+https://github.com/i-richardwang/onebrowser.git" },

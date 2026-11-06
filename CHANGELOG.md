@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Provider `anchor`: [Anchor Browser](https://anchorbrowser.io), with its residential proxy for `proxyCountry` and its credits as the quota.
+
 ## 0.1.1
 
 The first release (0.1.0 was published from a pre-release commit and withdrawn).

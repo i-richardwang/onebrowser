@@ -23,7 +23,7 @@ await browsers.close();
 
 **What it does not do**: choose a provider, cap the sessions held at once, spread sessions over providers, or stop using a provider whose quota runs low. Those are policy, and belong to the program using it. onebrowser opens the session it is asked for, and tells the program what it needs to decide: the quota, and `QuotaError` when a provider refuses a session for the account's quota.
 
-Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbrowser](https://hyperbrowser.ai), [Lightpanda](https://lightpanda.io) and [Kernel](https://www.kernel.sh); a program can add its own (see [Adding a provider](#adding-a-provider)). Node 22.13 or later.
+Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbrowser](https://hyperbrowser.ai), [Lightpanda](https://lightpanda.io), [Kernel](https://www.kernel.sh) and [Anchor Browser](https://anchorbrowser.io); a program can add its own (see [Adding a provider](#adding-a-provider)). Node 22.13 or later.
 
 ## Interface
 
@@ -73,6 +73,7 @@ How each provider meets them:
 | `hyperbrowser` | residential proxy, paid plans | at once: a session ends with its CDP connection | `timeoutMinutes`, in whole minutes |
 | `lightpanda` | its datacenter pool in that country | at once: a session is its CDP connection | Lightpanda's own limit is 15 min |
 | `kernel` | not supported (throws) | `timeout_seconds` after the CDP client left; until then a disconnected session stays in standby, counting toward the plan's concurrent browsers | this process only |
+| `anchor` | residential proxy | `idle_timeout` after the last CDP connection left, in whole minutes rounded down (at least 1) | `max_duration`, in whole minutes |
 
 ### Quota
 
@@ -83,6 +84,7 @@ How each provider meets them:
 | `hyperbrowser` | credits | `GET /api/team/credit-info`, the endpoint of Hyperbrowser's SDK (not in its API docs) |
 | `lightpanda` | browser hours of the calendar month (`monthlyHours`, default: the free plan's) | the ledger's record of its sessions: its console shows the month's usage, but its token cannot read it. So the reading is whole while the account is used only through ledgers of this machine |
 | `kernel` | browser hours of the calendar month (`monthlyHours`, default: what the free plan's credits pay for) | the uptime of the account's sessions this month, from `GET /browsers`; a session refused with 403 (spending cap) throws `QuotaError` |
+| `anchor` | credits | `GET /v1/billing`; a session refused with 402 throws `QuotaError` |
 
 ### API keys
 
