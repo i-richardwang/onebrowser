@@ -1,0 +1,32 @@
+name: Release
+
+# Pushing a tag vX.Y.Z publishes the package to npm as onebrowser@X.Y.Z. The tag must match the version in
+# package.json. Publishing uses npm trusted publishing (OIDC): no token is stored, npm trusts this workflow by name.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Check the tag against the package version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm test
+      - run: npm publish
