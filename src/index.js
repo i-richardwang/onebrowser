@@ -2,7 +2,7 @@ import { sessionCost } from './cost.js';
 import { readApiKey } from './credentials.js';
 import { QuotaError } from './errors.js';
 import { defaultLedgerPath, Ledger } from './ledger.js';
-import { ADAPTERS, checkAdapter, checkSettings } from './providers/index.js';
+import { ADAPTERS, checkAdapter, fullSettings } from './providers/index.js';
 import { KEEP_ALIVE_MS, Session } from './session.js';
 
 export { apiKeyEnv } from './credentials.js';
@@ -10,18 +10,18 @@ export { QuotaError };
 
 /** Session options when openSession() is not given them */
 const SESSION_DEFAULTS = {
-  proxyCountry: null, // null: the provider's default egress
-  idleTimeoutSec: 60, // a session whose client is gone (its process was killed) ends this long after at the latest
+  proxyCountry: null,
+  idleTimeoutSec: 60,
   maxDurationMs: 15 * 60_000,
 };
 
 /**
- * The session options of openSession() with the defaults filled in (SESSION_DEFAULTS); throws when one is unknown
- * or out of range, so that a program can check its configuration before it opens any session:
+ * The session options of openSession() with the defaults filled in; throws when one is unknown or out of range,
+ * so that a program can check its configuration before it opens any session:
  *   proxyCountry     country code: the provider's proxy there; null: its default egress
- *   idleTimeoutSec   a session whose client is gone ends this long after at the latest; at least twice the
- *                    keep-alive interval (session.js)
- *   maxDurationMs    the session ends this long after it was opened at the latest
+ *   idleTimeoutSec   a session whose client is gone ends this long after at the latest, or after the provider's
+ *                    minIdleTimeoutSec if longer (≥ 2 × KEEP_ALIVE_MS)
+ *   maxDurationMs    a session ends this long after it was opened at the latest
  */
 export function sessionOptions(options = {}) {
   const unknown = Object.keys(options).filter((k) => !Object.hasOwn(SESSION_DEFAULTS, k));
@@ -34,38 +34,24 @@ export function sessionOptions(options = {}) {
   return o;
 }
 
-/**
- * How long a session with these options (sessionOptions) lasts at most, whatever becomes of its process: this
- * process ends it at maxDurationMs, and its provider idleTimeoutSec after its client left, should the process die
- * or its release fail before
- */
-const sessionMsAtMost = (o) => o.maxDurationMs + o.idleTimeoutSec * 1000;
+/** How long a session lasts at most, whatever becomes of its process: closed at maxDurationMs, else ended by its provider once idle */
+const sessionMsAtMost = (o, settings) => o.maxDurationMs + Math.max(o.idleTimeoutSec, settings.minIdleTimeoutSec) * 1000;
 
 /**
- * Remote browsers from several providers behind one interface: a session is asked for by provider name, the way
- * an LLM request names its model. Every session is recorded in a ledger (ledger.js), which the usage of each
- * provider account and, for providers that cannot report it themselves, its quota are read from.
+ * Remote browsers from several providers behind one interface: a session is asked for by provider name. Every
+ * session is recorded in a ledger (ledger.js) shared by the programs on the machine, so that each provider
+ * account's usage, and what its quota has left at any moment, are known. Which provider to use, and when to
+ * stop using one, are the caller's decisions.
  *
- * What is left of an account's quota is what its provider reads, less what the sessions it has not billed yet
- * cost (quota()): the ledger knows those, and each provider's price (cost.js) what they cost. So a program can
- * tell, before it opens a session, whether the account can pay for it.
- *
- * Which provider to use, how many sessions to hold and when to stop using one are the caller's decisions:
- * OneBrowser opens the sessions it is asked for.
- *
- * new OneBrowser({ client, ledgerPath, providers, adapters })
- *   client       the program using it, recorded with each session (several programs may share one ledger)
- *   ledgerPath   SQLite file of the ledger (default: defaultLedgerPath() in ledger.js; ':memory:' for tests),
- *                opened when first needed
- *   providers    settings per provider name: apiKey (else from the environment, see credentials.js), and the
- *                adapter's own settings on top of its defaults (providers/<name>.js)
- *   adapters     further adapters by provider name, or replacements of built-in ones (providers/index.js)
+ * client: the program using it, recorded with each session; ledgerPath: the ledger's SQLite file, opened when
+ * first needed; providers: settings per provider name on top of its adapter's defaults (providers/index.js),
+ * apiKey among them (else credentials.js); adapters: further or replacement adapters by provider name.
  */
 export class OneBrowser {
-  #providers = new Map(); // name → { adapter, settings: its defaults with the given ones on top, apiKey: the one given }
+  #providers = new Map(); // name → { adapter, settings, apiKey }
   #ledger = null;
   #open = new Set();
-  #readings = new Map(); // provider → its last quota reading (#reading)
+  #readings = new Map(); // provider → { latest, done }: its latest quota reading, and the latest one done
 
   constructor({ client, ledgerPath = defaultLedgerPath(), providers = {}, adapters = {} }) {
     if (!client?.trim()) throw new Error('onebrowser: client must name the program using it');
@@ -74,15 +60,12 @@ export class OneBrowser {
     for (const [name, adapter] of Object.entries({ ...ADAPTERS, ...adapters })) {
       checkAdapter(name, adapter);
       const { apiKey, ...given } = providers[name] ?? {};
-      const settings = { ...adapter.defaults, ...given };
-      checkSettings(name, settings);
-      this.#providers.set(name, { adapter, settings, apiKey });
+      this.#providers.set(name, { adapter, settings: fullSettings(name, { ...adapter.defaults, ...given }), apiKey });
     }
     const unknown = Object.keys(providers).filter((name) => !this.#providers.has(name));
     if (unknown.length) throw new Error(`onebrowser: no adapter for provider ${unknown.join(', ')}`);
   }
 
-  /** Names of the providers it can open sessions with */
   get providers() {
     return [...this.#providers.keys()];
   }
@@ -91,14 +74,12 @@ export class OneBrowser {
     return (this.#ledger ??= new Ledger(this.ledgerPath));
   }
 
-  /** The adapter, settings and the API key given of `provider`; throws when it is unknown */
   #known(provider) {
     const p = this.#providers.get(provider);
     if (!p) throw new Error(`unknown provider ${provider} (expected ${this.providers.join(', ')})`);
     return p;
   }
 
-  /** The adapter, settings and API key of `provider`; throws when it is unknown or has no API key */
   #ready(provider) {
     const p = this.#known(provider);
     return { ...p, apiKey: readApiKey(provider, p.apiKey) };
@@ -110,14 +91,13 @@ export class OneBrowser {
   }
 
   /**
-   * A new session with `provider`, recorded in the ledger once the provider has created it; options: see
-   * sessionOptions(). Throws when the provider does not create one; QuotaError when it refuses for the account's
-   * quota.
+   * A new session with `provider` (options: sessionOptions()), in the ledger from when its provider has created
+   * it. Throws when the provider creates none; QuotaError when it refuses for the account's quota.
    */
   async openSession({ provider, ...options }) {
     const { adapter, settings, apiKey } = this.#ready(provider);
     const o = sessionOptions(options);
-    const openedAt = Date.now(); // the provider bills the session from some time after this
+    const openedAt = Date.now();
     let remote;
     try {
       remote = await adapter.createSession(settings, apiKey, o);
@@ -125,79 +105,91 @@ export class OneBrowser {
       if (e instanceof QuotaError) throw e;
       throw new Error(`failed to create a ${provider} session: ${e.message}`);
     }
-    const session = new Session({
-      provider, remote, openedAt, maxDurationMs: o.maxDurationMs,
-      release: async (s) => {
-        this.#open.delete(s);
-        this.#store.closed(s);
-        await adapter.releaseSession(settings, apiKey, s);
-      },
-    });
+    const session = new Session({ provider, remote, openedAt, maxDurationMs: o.maxDurationMs, release: (s) => this.#release(adapter, settings, apiKey, s) });
     try {
-      this.#store.opened({ provider, id: session.id, client: this.client, openedAt, endsBy: openedAt + sessionMsAtMost(o) });
+      this.#store.opened({ provider, id: session.id, client: this.client, openedAt, endsBy: openedAt + sessionMsAtMost(o, settings) });
     } catch (e) {
-      await session.close().catch(() => {}); // a session the ledger has no record of is not handed out
+      await session.close().catch(() => {}); // a session the ledger does not know is not handed out
       throw e;
     }
     this.#open.add(session);
     return session;
   }
 
-  /**
-   * What is left of the account's quota with `provider`, in the provider's own unit: { remaining, unbilled, unit,
-   * renewsAt }. remaining: what the provider reads, less `unbilled`: what the sessions in the ledger that the
-   * reading may not show yet cost, each at the provider's price (cost.js). Those are the sessions that had not
-   * ended billingDelayMs before the reading: open ones as if they lasted as long as they can, ended ones as long
-   * as they lasted. renewsAt (ms) when the quota renews by itself, null when only a top-up renews it.
-   *
-   * The provider is read anew unless a reading started at most maxAgeMs ago, or still in progress, can be used
-   * (a failed one too: it throws again); what is unbilled is worked out from the ledger every time, so it includes
-   * the sessions opened since, by any program sharing the ledger. Throws when the provider cannot be read.
-   */
-  async quota(provider, { maxAgeMs = 0 } = {}) {
-    const { settings } = this.#known(provider);
-    const reading = this.#reading(provider, maxAgeMs);
-    const answer = await reading.answer;
-    const sessions = this.#store.openAfter(provider, reading.startedAt - settings.billingDelayMs);
-    const unbilled = sessions.reduce((cost, s) => cost + sessionCost(settings.price, s.durationMs), 0);
-    return { remaining: answer.remaining - unbilled, unbilled, unit: answer.unit, renewsAt: answer.renewsAt ?? null };
+  /** Releases `session` at its provider and records it closed: when it was released, so its whole billed time counts */
+  async #release(adapter, settings, apiKey, session) {
+    try {
+      await adapter.releaseSession(settings, apiKey, session);
+      const closedAt = Date.now();
+      this.#store.closed({ provider: session.provider, id: session.id, closedAt });
+      return closedAt;
+    } finally {
+      this.#open.delete(session);
+    }
   }
 
   /**
-   * The provider's quota reading, { startedAt, answer: a promise of the adapter's answer }: the last one if it
-   * started at most maxAgeMs ago or is still in progress, else a new one. A failed reading counts as one too: its
-   * error is the answer until maxAgeMs have passed.
+   * Reads the account's quota with `provider` from the provider, unless a reading in progress or started at most
+   * maxAgeMs ago can be used (a failed one throws again); then answers as quota().
    */
+  async readQuota(provider, { maxAgeMs = 0 } = {}) {
+    const reading = this.#reading(provider, maxAgeMs);
+    await reading.settled;
+    if (reading.error) throw reading.error;
+    return this.quota(provider);
+  }
+
+  /**
+   * What is left of the account's quota now, in the provider's unit: { remaining, unbilled, unit, renewsAt }. The
+   * last reading shows the sessions that ended billingDelayMs before it; `unbilled` is what the ledger's others
+   * cost at the provider's price, open ones as if they lasted as long as they can, and remaining the reading less
+   * that. renewsAt (ms): when the quota renews by itself; null: only a top-up renews it. Throws until the
+   * provider has been read, and while its last reading failed.
+   */
+  quota(provider) {
+    const { settings } = this.#known(provider);
+    const reading = this.#readings.get(provider)?.done;
+    if (!reading) throw new Error(`the quota of ${provider} has not been read yet (readQuota)`);
+    if (reading.error) throw reading.error;
+    const unbilled = this.#store.openSince(provider, reading.billedBefore).reduce((cost, s) => cost + sessionCost(settings.price, s.durationMs), 0);
+    const { remaining, unit, renewsAt = null } = reading.value;
+    return { remaining: remaining - unbilled, unbilled, unit, renewsAt };
+  }
+
+  /** The latest reading of the provider's quota if it is in progress or at most maxAgeMs old, else a new one */
   #reading(provider, maxAgeMs) {
-    const last = this.#readings.get(provider);
-    if (last && (!last.done || Date.now() - last.startedAt <= maxAgeMs)) return last;
+    const readings = this.#readings.get(provider) ?? { latest: null, done: null };
+    this.#readings.set(provider, readings);
+    const { latest } = readings;
+    const inProgress = latest && latest !== readings.done;
+    if (inProgress || (latest && Date.now() - latest.startedAt <= maxAgeMs)) return latest;
     const { adapter, settings, apiKey } = this.#ready(provider);
-    const reading = { startedAt: Date.now(), done: false };
-    reading.answer = adapter
-      .quota(settings, apiKey, this.#store.history(provider))
-      .then((q) => {
+    const startedAt = Date.now();
+    const reading = { startedAt, billedBefore: startedAt - settings.billingDelayMs, value: null, error: null };
+    readings.latest = reading;
+    reading.settled = (async () => {
+      try {
+        const q = await adapter.quota(settings, apiKey, this.#store.history(provider, reading.billedBefore));
         if (!(Number.isFinite(q?.remaining) && typeof q.unit === 'string')) throw new Error(`${provider} answered no quota: ${JSON.stringify(q)}`);
-        return q;
-      })
-      .finally(() => (reading.done = true));
-    reading.answer.catch(() => {}); // awaited by the callers; not an unhandled rejection while cached
-    this.#readings.set(provider, reading);
+        reading.value = q;
+      } catch (e) {
+        reading.error = e;
+      }
+      readings.done = reading;
+    })();
     return reading;
   }
 
-  /**
-   * What a session with `provider` and these session options (sessionOptions) costs at most, in the unit of its
-   * quota: as if it lasted as long as it can, at the provider's price
-   */
+  /** What a session with these options costs at most, in the unit of the provider's quota */
   maxSessionCost(provider, options) {
-    return sessionCost(this.#known(provider).settings.price, sessionMsAtMost(sessionOptions(options)));
+    const { settings } = this.#known(provider);
+    return sessionCost(settings.price, sessionMsAtMost(sessionOptions(options), settings));
   }
 
   /**
-   * Stores each provider's record (duration, proxy traffic) of the sessions in the ledger that have ended and have
-   * none yet; sessions still running wait for a later call. A provider that cannot be reached, or has no API key,
-   * is left for a later call too. Sessions of a provider it has no adapter for (another program's own) are left
-   * to the programs that have one. Returns { reported: sessions completed, failed: [{ provider, error }] }.
+   * Stores the providers' records (duration, proxy traffic) of the ledger's ended sessions that have none yet:
+   * { reported, failed: [{ provider, error }] }. What cannot be fetched now, and the sessions of providers it has
+   * no adapter for, are left for a later call.
    */
   async syncUsage() {
     const store = this.#store;
@@ -218,10 +210,8 @@ export class OneBrowser {
 
   /**
    * Sessions opened since `since` (ms), per UTC day, provider and client:
-   * [{ day, provider, client, sessions, minutes, untimed, unsynced, proxyBytes }]. Minutes are the provider's
-   * record where syncUsage has stored it, otherwise the open-to-close timing of the process that opened the
-   * session; untimed: sessions with neither (their process ended before closing them and the provider has not
-   * reported them yet); unsynced: sessions without the provider's record.
+   * [{ day, provider, client, sessions, minutes, untimed, unsynced, proxyBytes }]. minutes: the provider's record
+   * (syncUsage), else the open-to-close timing; untimed: sessions with neither; unsynced: those without the record.
    */
   usage({ since }) {
     return this.#store.usage(since);
@@ -234,7 +224,6 @@ export class OneBrowser {
     this.#ledger = null;
   }
 
-  /** close(), for `await using browsers = new OneBrowser(…)` */
   [Symbol.asyncDispose]() {
     return this.close();
   }

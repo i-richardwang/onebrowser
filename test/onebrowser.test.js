@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { sessionCost } from '../src/cost.js';
+import { fullPrice, sessionCost } from '../src/cost.js';
 import { apiKeyEnv, OneBrowser, QuotaError, sessionOptions } from '../src/index.js';
 import { ADAPTERS } from '../src/providers/index.js';
 import { utcMonth } from '../src/providers/month.js';
@@ -107,7 +107,7 @@ test('a session is created with the provider\'s settings, its API key and the sh
   const adapter = fakeAdapter({ defaults: { ...FAKE_DEFAULTS, region: 'eu' } });
   const b = browsersWith(adapter, { providers: { fake: { apiKey: 'key', apiBase: 'https://other' } } });
   const s = await b.openSession({ provider: 'fake', proxyCountry: 'DE' });
-  assert.deepEqual(adapter.created, [{ settings: { ...FAKE_DEFAULTS, apiBase: 'https://other', region: 'eu' }, apiKey: 'key', options: { ...options, proxyCountry: 'DE' } }]);
+  assert.deepEqual(adapter.created, [{ settings: { ...FAKE_DEFAULTS, apiBase: 'https://other', region: 'eu', price: fullPrice(FAKE_DEFAULTS.price), minIdleTimeoutSec: 0 }, apiKey: 'key', options: { ...options, proxyCountry: 'DE' } }]);
   assert.deepEqual([s.provider, s.id, s.egress, s.cdpUrl, s.closedAt], ['fake', 's1', 'fake IP', 'wss://fake/cdp', null]);
   const [open] = b.usage({ since: 0 });
   assert.deepEqual([open.provider, open.client, open.sessions, open.untimed, open.unsynced], ['fake', 'test', 1, 1, 1]);
@@ -116,7 +116,7 @@ test('a session is created with the provider\'s settings, its API key and the sh
   await s[Symbol.asyncDispose](); // what `await using` calls: a second close
   assert.deepEqual(adapter.released, ['s1']);
   assert.ok(s.closedAt >= s.openedAt);
-  assert.equal(b.usage({ since: 0 })[0].untimed, 0); // timed by its open and close
+  assert.deepEqual([b.usage({ since: 0 })[0].untimed, b.usage({ since: 0 })[0].minutes], [0, (s.closedAt - s.openedAt) / 60_000]); // timed by its open and release
   await assert.rejects(s.connect(), /fake session s1 is closed/);
   await b.close();
 });
@@ -136,12 +136,15 @@ test('a session the provider refuses is not recorded: QuotaError as is, other fa
   await b.close();
 });
 
-test('a session that the provider cannot release is recorded closed; close() says so', async () => {
+test('a session that the provider cannot release is not recorded closed: it counts as lasting as long as it can; every close() says so', async () => {
   const b = browsersWith(fakeAdapter({ releaseSession: async () => { throw new Error('HTTP 502'); } }));
   const s = await b.openSession({ provider: 'fake' });
   await assert.rejects(s.close(), /HTTP 502/);
-  assert.ok(s.closedAt);
-  assert.equal(b.usage({ since: 0 })[0].untimed, 0);
+  await assert.rejects(s.close(), /HTTP 502/);
+  await assert.rejects(s.connect(), /fake session s1 is closed/);
+  assert.equal(s.closedAt, null);
+  assert.equal(b.usage({ since: 0 })[0].untimed, 1);
+  assert.equal((await b.readQuota('fake')).unbilled, b.maxSessionCost('fake', {}));
   await b.close();
 });
 
@@ -157,6 +160,33 @@ test('a session ends after maxDurationMs, and disposing of the OneBrowser closes
   assert.deepEqual(adapter.released, ['s1', 's2']);
 });
 
+test('a release in progress when the OneBrowser closes is awaited, not repeated', async () => {
+  let release;
+  const adapter = fakeAdapter({ releaseSession: (settings, apiKey, session) => new Promise((resolve) => (release = () => resolve(adapter.released.push(session.id)))) });
+  const b = browsersWith(adapter);
+  const s = await b.openSession({ provider: 'fake' });
+  const closing = s.close();
+  while (!release) await new Promise(setImmediate);
+  let closed = false;
+  const disposing = b.close().then(() => (closed = true));
+  await new Promise(setImmediate);
+  assert.equal(closed, false); // waits for the release in progress
+  release();
+  await Promise.all([closing, disposing]);
+  assert.deepEqual([adapter.released, Boolean(s.closedAt)], [['s1'], true]);
+});
+
+test('programs sharing a ledger count each other\'s sessions at once', async () => {
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-ledger-')), 'sessions.db');
+  const adapter = fakeAdapter({ quota: async () => ({ remaining: 100, unit: 'credits' }) });
+  const shared = (client) => new OneBrowser({ client, ledgerPath, adapters: { fake: adapter }, providers: { fake: { apiKey: 'key' } } });
+  const [one, other] = [shared('one'), shared('other')];
+  await other.readQuota('fake');
+  await one.openSession({ provider: 'fake' });
+  assert.equal(other.quota('fake').unbilled, other.maxSessionCost('fake', {}));
+  await Promise.all([one.close(), other.close()]);
+});
+
 // ---------------- quota and usage ----------------
 
 test('a quota reading renews only on a top-up unless the provider says when; one without a number left is a failed reading', async () => {
@@ -164,9 +194,9 @@ test('a quota reading renews only on a top-up unless the provider says when; one
     adapters: { monthly: fakeAdapter({ quota: async () => ({ remaining: 3, unit: 'hours', renewsAt: 42 }) }), changed: fakeAdapter({ quota: async () => ({ remaining: Number(undefined), unit: 'USD' }) }) },
     providers: { monthly: { apiKey: 'k' }, changed: { apiKey: 'k' } },
   });
-  assert.deepEqual(await b.quota('fake'), { remaining: 5, unbilled: 0, unit: 'USD', renewsAt: null });
-  assert.deepEqual(await b.quota('monthly'), { remaining: 3, unbilled: 0, unit: 'hours', renewsAt: 42 });
-  await assert.rejects(b.quota('changed'), /changed answered no quota/); // a changed response shape
+  assert.deepEqual(await b.readQuota('fake'), { remaining: 5, unbilled: 0, unit: 'USD', renewsAt: null });
+  assert.deepEqual(await b.readQuota('monthly'), { remaining: 3, unbilled: 0, unit: 'hours', renewsAt: 42 });
+  await assert.rejects(b.readQuota('changed'), /changed answered no quota/); // a changed response shape
   await b.close();
 });
 
@@ -177,47 +207,54 @@ test('quota is the reading less what the sessions it may not show yet cost: open
   const s = await b.openSession({ provider: 'fake' }); // 15 min, then 60 s idle at most: 16 credits by the minute
   assert.equal(b.maxSessionCost('fake', {}), 16);
   assert.equal(b.maxSessionCost('fake', { maxDurationMs: 90_000, idleTimeoutSec: 30 }), 2);
-  assert.deepEqual(await b.quota('fake'), { remaining: 84, unbilled: 16, unit: 'credits', renewsAt: null });
+  const anchorPrice = new OneBrowser({ client: 'x', ledgerPath: ':memory:' });
+  assert.equal(anchorPrice.maxSessionCost('anchor', { maxDurationMs: 30_000, idleTimeoutSec: 30 }), 0.015); // its idle timeout is a minute at least: 2 minutes
+  assert.deepEqual(await b.readQuota('fake'), { remaining: 84, unbilled: 16, unit: 'credits', renewsAt: null });
   t.mock.timers.setTime(start + 90_000);
   await s.close(); // lasted 1.5 min: 2 credits
-  assert.equal((await b.quota('fake')).unbilled, 2);
+  assert.equal((await b.readQuota('fake')).unbilled, 2);
   t.mock.timers.setTime(start + 150_000); // a reading a minute after the session ended may not show it yet
-  assert.equal((await b.quota('fake')).unbilled, 2);
+  assert.equal((await b.readQuota('fake')).unbilled, 2);
   t.mock.timers.setTime(start + 150_001);
-  assert.deepEqual(await b.quota('fake'), { remaining: 100, unbilled: 0, unit: 'credits', renewsAt: null });
+  assert.deepEqual(await b.readQuota('fake'), { remaining: 100, unbilled: 0, unit: 'credits', renewsAt: null });
   await b.close();
 });
 
-test('a quota reading is used again while at most maxAgeMs old or in progress, a failed one too; the sessions opened since are counted each time', async (t) => {
+test('a quota reading is used again while at most maxAgeMs old or in progress, a failed one too; quota() counts the sessions opened since at the moment it is asked', async (t) => {
   const start = Date.UTC(2026, 10, 6, 12);
   t.mock.timers.enable({ apis: ['Date'], now: start });
   let reads = 0;
   const b = browsersWith(fakeAdapter({ quota: async () => (++reads === 3 ? Promise.reject(new Error('HTTP 503')) : { remaining: 100, unit: 'credits' }) }));
   const tenMinutes = { maxAgeMs: 10 * 60_000 };
-  await b.quota('fake', tenMinutes);
+  assert.throws(() => b.quota('fake'), /the quota of fake has not been read yet/);
+  await b.readQuota('fake', tenMinutes);
   await b.openSession({ provider: 'fake' });
-  assert.deepEqual([(await b.quota('fake', tenMinutes)).remaining, reads], [84, 1]); // the reading again, the new session counted
+  assert.deepEqual([b.quota('fake').remaining, reads], [84, 1]); // the last reading, the session opened since counted at once
+  assert.deepEqual([(await b.readQuota('fake', tenMinutes)).remaining, reads], [84, 1]); // the reading again
   t.mock.timers.setTime(start + 1);
-  await Promise.all([b.quota('fake'), b.quota('fake')]);
+  const both = Promise.all([b.readQuota('fake'), b.readQuota('fake')]);
+  assert.deepEqual([b.quota('fake').remaining, reads], [84, 2]); // the last reading done, while the next is in progress
+  await both;
   assert.equal(reads, 2); // one reading in progress serves both
   t.mock.timers.setTime(start + 1 + 10 * 60_000 + 1); // 10 minutes after the last reading began
-  await assert.rejects(b.quota('fake', tenMinutes), /HTTP 503/);
-  await assert.rejects(b.quota('fake', tenMinutes), /HTTP 503/); // the same failed reading
+  await assert.rejects(b.readQuota('fake', tenMinutes), /HTTP 503/);
+  await assert.rejects(b.readQuota('fake', tenMinutes), /HTTP 503/); // the same failed reading
+  assert.throws(() => b.quota('fake'), /HTTP 503/);
   t.mock.timers.setTime(start + 1 + 10 * 60_000 + 2);
-  await b.quota('fake'); // maxAgeMs 0: read anew
+  await b.readQuota('fake'); // maxAgeMs 0: read anew
   assert.equal(reads, 4);
   await b.close();
 });
 
 test('the price: per session, per hour in whole steps rounded up, at least minSec; as the providers bill', () => {
-  const at = (price, ...secs) => secs.map((sec) => Number(sessionCost(price, sec * 1000).toFixed(6)));
+  const at = (price, ...secs) => secs.map((sec) => Number(sessionCost(fullPrice(price), sec * 1000).toFixed(6)));
   assert.deepEqual(at(firecrawl.defaults.price, 1, 30, 74.7, 86, 196), [2, 2, 3, 3, 7]); // Firecrawl's own records
   assert.deepEqual(at(steel.defaults.price, 0.5, 60, 61), [0.001667, 0.001667, 0.003333]);
   assert.deepEqual(at(anchor.defaults.price, 3, 202), [0.0125, 0.02]); // above Anchor's records: 0.01013, 0.01646
   assert.deepEqual(at(kernel.defaults.price, 74), [0.020556]); // hours, as its uptime
 });
 
-test('a ledger of onebrowser 0.3 is brought up to date when opened: its sessions end 16 minutes after they were opened at the latest', async () => {
+test('a ledger of onebrowser 0.3 is brought up to date when opened (its sessions end 16 minutes after they were opened at the latest); one of a later onebrowser is refused', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-ledger-'));
   const ledgerPath = path.join(dir, 'sessions.db');
   try {
@@ -229,7 +266,7 @@ test('a ledger of onebrowser 0.3 is brought up to date when opened: its sessions
     old.close();
     for (let opening = 0; opening < 2; opening++) { // the second finds it up to date
       const b = new OneBrowser({ client: 'reader', ledgerPath, adapters: { fake: fakeAdapter({ quota: async () => ({ remaining: 100, unit: 'credits' }) }) }, providers: { fake: { apiKey: 'k' } } });
-      assert.equal((await b.quota('fake')).unbilled, 16); // its process may be gone: it lasts until it ends at the latest
+      assert.equal((await b.readQuota('fake')).unbilled, 16); // its process may be gone: it lasts until it ends at the latest
       await b.close();
     }
     const blank = new OneBrowser({ client: 'x', ledgerPath: path.join(dir, 'new.db') });
@@ -237,12 +274,18 @@ test('a ledger of onebrowser 0.3 is brought up to date when opened: its sessions
     await blank.close();
     const db = new DatabaseSync(ledgerPath);
     const created = new DatabaseSync(path.join(dir, 'new.db'));
-    const schema = (d) => d.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all();
+    const schema = (d) => ({
+      columns: d.prepare('PRAGMA table_xinfo(sessions)').all(),
+      indexes: d.prepare('PRAGMA index_list(sessions)').all().map((i) => ({ ...i, columns: d.prepare(`PRAGMA index_info(${i.name})`).all() })),
+    });
     assert.deepEqual(schema(db), schema(created)); // the same as a new ledger's
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, created.prepare('PRAGMA user_version').get().user_version);
     const row = db.prepare('SELECT opened_at, ends_by FROM sessions').get();
     assert.equal(Date.parse(row.ends_by) - Date.parse(row.opened_at), 16 * 60_000);
+    created.exec('PRAGMA user_version = 99');
     for (const d of [db, created]) d.close();
+    const older = new OneBrowser({ client: 'x', ledgerPath: path.join(dir, 'new.db') });
+    assert.throws(() => older.usage({ since: 0 }), /was made by a later onebrowser \(schema 99; this one knows 2\)/);
   } finally {
     fs.rmSync(dir, { recursive: true });
   }
@@ -349,9 +392,17 @@ test('Lightpanda quota is the monthly hours less the ledger\'s session time of t
   await browsers.openSession({ provider: 'lightpanda' }); // never closed: its process was killed, so it lasted 16 minutes at most
   t.mock.timers.setTime(minutes(30));
   await browsers.openSession({ provider: 'lightpanda' }); // open: 16 minutes at most, not billed yet
-  const q = await browsers.quota('lightpanda');
+  const q = await browsers.readQuota('lightpanda');
   assert.deepEqual([q.remaining, q.unbilled].map((h) => Number((h * 60).toFixed(6))), [(lightpanda.defaults.monthlyHours * 60) - 6 - 16 - 16, 16]);
-  await browsers.close();
+  // with a 20-minute billing delay, a session never closed (it ended by minute 16) is not billed by a reading at
+  // minute 30: it counts as not billed yet, and only so
+  const delayed = new OneBrowser({ client: 'test', ledgerPath: ':memory:', providers: { lightpanda: { apiKey: 'tok', billingDelayMs: 20 * 60_000 } } });
+  t.mock.timers.setTime(start);
+  await delayed.openSession({ provider: 'lightpanda' });
+  t.mock.timers.setTime(minutes(30));
+  const d = await delayed.readQuota('lightpanda');
+  assert.deepEqual([d.remaining, d.unbilled].map((h) => Number((h * 60).toFixed(6))), [(lightpanda.defaults.monthlyHours * 60) - 16, 16]);
+  await Promise.all([browsers.close(), delayed.close()]);
 });
 
 test('a Kernel session is headless with the idle timeout; 403 is the spending cap; a deleted session is released', async () => {

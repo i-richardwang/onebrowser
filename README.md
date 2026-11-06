@@ -15,14 +15,15 @@ const page = await session.newPage(); // Playwright; or any CDP client on sessio
 await page.goto('https://example.com');
 await session.close();
 
-await browsers.quota('steel'); // { remaining, unbilled, unit: 'USD', renewsAt: null }
-browsers.maxSessionCost('steel', {}); // what a session with these options costs at most, in USD
-await browsers.syncUsage(); // fetches the providers' records of ended sessions into the ledger
+await browsers.readQuota('steel'); // { remaining, unbilled, unit: 'USD', renewsAt: null }
+browsers.quota('steel'); // the same now, from that reading: sessions opened since count at once
+browsers.maxSessionCost('steel'); // what a session with the default options costs at most, in USD
+await browsers.syncUsage(); // stores the providers' records of ended sessions in the ledger
 browsers.usage({ since: Date.parse('2026-11-01') }); // [{ day, provider, client, sessions, minutes, … }]
 await browsers.close();
 ```
 
-**What it does not do**: choose a provider, cap the sessions held at once, spread sessions over providers, or stop using a provider whose quota runs low. Those are policy, and belong to the program using it. onebrowser opens the session it is asked for, and tells the program what it needs to decide: what is left of the quota once the sessions not billed yet are paid for, what a session costs at most, and `QuotaError` when a provider refuses a session for the account's quota.
+Choosing a provider, capping sessions and stopping before a quota runs out are the program's policy. onebrowser opens the sessions it is asked for and gives the program what it needs to decide: what the quota has left, what a session costs at most, and `QuotaError` when a provider refuses a session for the account's quota.
 
 Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbrowser](https://hyperbrowser.ai), [Lightpanda](https://lightpanda.io), [Kernel](https://www.kernel.sh), [Anchor Browser](https://anchorbrowser.io) and [Firecrawl](https://www.firecrawl.dev); a program can add its own (see [Adding a provider](#adding-a-provider)). Node 22.13 or later.
 
@@ -34,25 +35,26 @@ Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbro
 |---|---|
 | `client` | The program using it, recorded with each session; required |
 | `ledgerPath` | SQLite file of the ledger (default below; `':memory:'` for tests). Opened when first needed |
-| `providers` | Settings per provider name, on top of its adapter's `defaults`: `apiKey`, `price` and `billingDelayMs` (see [Quota](#quota)), and the adapter's own settings (API base URLs, plan facts such as `monthlyHours`) |
+| `providers` | Settings per provider name, on top of its adapter's `defaults`: `apiKey`, `price`, `billingDelayMs`, `minIdleTimeoutSec` (see [Quota](#quota)) and the adapter's own (API base URLs, plan facts such as `monthlyHours`) |
 | `adapters` | Further adapters by provider name, or replacements of built-in ones |
 
 | Method | |
 |---|---|
 | `providers` | Names of the providers it can open sessions with |
 | `checkReady(provider)` | Throws when the provider is unknown or has no API key |
-| `openSession({ provider, proxyCountry, idleTimeoutSec, maxDurationMs })` | A new session, recorded in the ledger once the provider has created it. Throws `QuotaError` when the provider refuses it for the account's quota |
-| `quota(provider, { maxAgeMs })` | `{ remaining, unbilled, unit, renewsAt }` in the provider's own unit: what the provider reads less `unbilled`, what the sessions it may not show yet cost (see [Quota](#quota)); `renewsAt` (ms) when it renews by itself, `null` when only a top-up renews it. The provider is read anew unless a reading started at most `maxAgeMs` ago (default 0) or one in progress can be used, a failed one too; `unbilled` is worked out anew every time. Throws when the provider cannot be read |
-| `maxSessionCost(provider, options)` | What a session with these session options costs at most, in the unit of the provider's quota: as if it lasted `maxDurationMs` and then `idleTimeoutSec`, at the provider's price |
-| `syncUsage()` | Stores the providers' records (duration, proxy traffic) of the ended sessions that have none yet: `{ reported, failed: [{ provider, error }] }`. Sessions of a provider it has no adapter for (another program's own) are left to the programs that have one |
+| `openSession({ provider, proxyCountry, idleTimeoutSec, maxDurationMs })` | A new session, in the ledger from when the provider has created it. Throws `QuotaError` when the provider refuses it for the account's quota |
+| `readQuota(provider, { maxAgeMs })` | Reads the provider's quota, unless a reading in progress or started at most `maxAgeMs` ago (default 0) can be used, a failed one too; then answers as `quota()` |
+| `quota(provider)` | What is left now, from the last reading: `{ remaining, unbilled, unit, renewsAt }` (see [Quota](#quota)). Throws until the provider has been read, and while its last reading failed |
+| `maxSessionCost(provider, options)` | What a session with these options costs at most, in the unit of the provider's quota |
+| `syncUsage()` | Stores the providers' records (duration, proxy traffic) of ended sessions: `{ reported, failed: [{ provider, error }] }` |
 | `usage({ since })` | Sessions opened since `since` (ms) per UTC day, provider and client: `sessions`, `minutes` (the provider's record, else the open-to-close timing), `untimed`, `unsynced`, `proxyBytes` |
 | `close()` | Closes the sessions still open and the ledger |
 
-A session (`openSession`) has `id`, `provider`, `egress`, `cdpUrl` (it may carry the API key: never log it), `openedAt` (when it was asked for), `closedAt`, and:
+A session has `id`, `provider`, `egress`, `cdpUrl` (it may carry the API key: never log it), `openedAt` (when it was asked for), `closedAt` (when its provider released it), and:
 
-- `connect()`: Playwright's `Browser` over its CDP connection, made once. A keep-alive command every 15 s keeps the provider's idle timeout from ending a session that is in use.
-- `newPage()`: always a new page in the default context: the page a remote browser starts with is not always one that can be navigated.
-- `close()`: disconnects and releases it; only the first call does. The ledger records it closed in any case. Throws when the provider could not release it: the provider then ends it by itself.
+- `connect()`: Playwright's `Browser` over its CDP connection, made once. A keep-alive command every 15 s keeps the provider's idle timeout from ending a session in use.
+- `newPage()`: a new page in the default context: the page a remote browser starts with cannot always be navigated.
+- `close()`: disconnects and releases it; every call answers as the first. Throws when the provider could not release it: the provider ends it by itself, and the ledger counts it as lasting as long as it can.
 
 A session and a `OneBrowser` are async-disposable: `await using session = await browsers.openSession({ provider: 'steel' })` closes the session at the end of its block (Node 24 or later; on Node 22 call `close()`).
 
@@ -61,7 +63,7 @@ A session and a `OneBrowser` are async-disposable: `await using session = await 
 | Option | Default | Meaning |
 |---|---|---|
 | `proxyCountry` | `null` | A country code: the provider's proxy in that country. `null`: its default egress |
-| `idleTimeoutSec` | 60 | A session whose client is gone (its process was killed) ends this long after at the latest. At least 30 (twice the keep-alive interval) |
+| `idleTimeoutSec` | 60 | A session whose client is gone (its process was killed) ends this long after at the latest, or after the provider's `minIdleTimeoutSec` if longer. At least 30 (twice the keep-alive interval) |
 | `maxDurationMs` | 15 min | The session ends this long after it was opened at the latest: this process closes it then, and the provider's own limit is set to it where its API takes one |
 
 `sessionOptions(options)` returns them with the defaults filled in and throws when one is unknown or out of range, so that a program can check its configuration before it opens any session.
@@ -80,9 +82,9 @@ How each provider meets them:
 
 ### Quota
 
-`quota()` answers what is left of the account's quota once every session not billed yet is paid for. The provider's reading shows the sessions that ended up to `billingDelayMs` before it; the ledger has the others, still open or ended since, and each costs the provider's `price`: an open session as if it lasted as long as it can (`maxDurationMs`, then `idleTimeoutSec`, should its process die), an ended one as long as it lasted. So a program can check, before each session, that the account can pay for one more (`maxSessionCost`), also between readings and with other programs on the machine opening sessions. Sessions opened elsewhere, through another machine's ledger, are not known until the provider bills them, and proxy traffic billed by the GB is not in the price.
+`quota()` is the last reading less `unbilled`: what the ledger's sessions that the reading does not show cost at the provider's `price`. A reading shows the sessions that ended `billingDelayMs` before it; the others are open ones, counted as lasting as long as they can (`maxDurationMs`, then `idleTimeoutSec`, at least the provider's `minIdleTimeoutSec`), and those ended since, counted as long as they lasted. So each session counts once from when its provider has created it, whichever program on the machine opened it, and a program can check before each session that the account pays for it (`maxSessionCost`). A provider that bills a session while it runs has part of it counted twice, on the safe side. Not counted: sessions opened through another machine's ledger, until the provider bills them, and proxy traffic billed by the GB.
 
-`price` is in the quota's unit: `perHour`, `perSession` (default 0), and the session time billed in whole `stepSec`, rounded up (default 1), at least `minSec` (default 0). It bounds what sessions cost, so where a provider does not document its rounding the adapter takes the minute, rounded up. Both are settings: a program on another plan sets its own.
+`price` is in the quota's unit: `perHour`, `perSession` (default 0), the session time billed in whole `stepSec`, rounded up (default 1), and at least `minSec` (default 0). Where a provider does not document its rounding, the adapter takes the minute. `renewsAt` (ms) is when the quota renews by itself; `null` when only a top-up renews it. `price` and `billingDelayMs` are settings: a program on another plan sets its own.
 
 | Provider | Quota, unit | Read from | `price` | `billingDelayMs` |
 |---|---|---|---|---|
@@ -102,7 +104,7 @@ Every provider read from its API showed a session's cost within about a minute o
 
 ### The ledger
 
-One SQLite file per machine by default: `$ONEBROWSER_DB`, else `onebrowser/sessions.db` in `$XDG_DATA_HOME` (default `~/.local/share`). Every program that uses onebrowser on the machine shares it, each under its own `client`, so the record of a provider account's sessions is whole whichever program opened them; several processes may write to it at once. Each session is recorded when its provider has created it (it is billed from then on, also when connecting fails afterwards), with when it ends at the latest, closed when released, and completed with the provider's own record by `syncUsage()` once it has ended. A ledger made by an older onebrowser is brought up to date when it is opened.
+One SQLite file per machine by default: `$ONEBROWSER_DB`, else `onebrowser/sessions.db` in `$XDG_DATA_HOME` (default `~/.local/share`), shared by every program on the machine under its own `client`. A session is recorded when its provider has created it (it is billed from then on), with when it ends at the latest; closed when its provider has released it; and completed with the provider's own record by `syncUsage()`. A ledger made by an earlier onebrowser is brought up to date when opened; one made by a later onebrowser is refused.
 
 ## Command line
 
@@ -115,17 +117,17 @@ npx onebrowser usage --days 7        # the ledger's sessions per UTC day, provid
 npx onebrowser usage --json --env-file .env
 ```
 
-`usage` first fetches the providers' records of the sessions that have ended, as `syncUsage()` does. With `--json`, `quota` prints an array of what `quota()` returns, with the provider: `{ provider, remaining, unbilled, unit, renewsAt }`, or `{ provider, error }` for a failed reading; `usage` prints `{ ledger, since, sessions, failed }`, where `sessions` is what `usage()` returns and `failed` what `syncUsage()` could not fetch. API keys are read as by the library, from the environment (`--env-file PATH` loads a file into it first). Exit status: 0 done, 1 a reading failed, 2 the command line is wrong.
+`usage` first fetches the providers' records of the sessions that have ended, as `syncUsage()` does. With `--json`, `quota` prints an array of what `readQuota()` returns, with the provider: `{ provider, remaining, unbilled, unit, renewsAt }`, or `{ provider, error }` for a failed reading; `usage` prints `{ ledger, since, sessions, failed }`, where `sessions` is what `usage()` returns and `failed` what `syncUsage()` could not fetch. API keys are read as by the library, from the environment (`--env-file PATH` loads a file into it first). Exit status: 0 done, 1 a reading failed, 2 the command line is wrong.
 
 ## Adding a provider
 
 Write `src/providers/<name>.js` and register it in `ADAPTERS` (`src/providers/index.js`, where the contract is):
 
-- `defaults`: its settings: `price` and `billingDelayMs` (see [Quota](#quota)), and its own (API base URLs, plan facts).
+- `defaults`: `price`, `billingDelayMs`, `minIdleTimeoutSec` if the provider takes no idle timeout as short as asked (see [Quota](#quota)), and its own settings (API base URLs, plan facts).
 - `createSession(settings, apiKey, { proxyCountry, idleTimeoutSec, maxDurationMs }) → { id, cdpUrl, egress }`: maps the session options onto the provider's parameters; throws `QuotaError` when the provider refuses the session for the account's quota.
 - `releaseSession(settings, apiKey, session)`.
 - `sessionUsage(settings, apiKey, [{ id, openedAt, closedAt }]) → [{ id, durationMs, proxyBytes }]`: the record of those sessions that have ended: the provider's own, or the ledger's timing for a provider whose records its API key cannot read.
-- `quota(settings, apiKey, history) → { remaining, unit, renewsAt? }`: `history.endedSessionMsSince(ms)` is the session time of the provider's sessions in the ledger that have ended, for a provider that cannot report its own usage.
+- `quota(settings, apiKey, history) → { remaining, unit, renewsAt? }`: for a provider that cannot report its usage, `history.endedSessionMsSince(ms)` is the session time of the ledger's sessions that the reading shows.
 
 Requests go through `src/providers/http.js`: every status other than 2xx is an `HttpError` (with `status`), so an adapter handles only the statuses that mean something of their own, such as a quota refusal.
 

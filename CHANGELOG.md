@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+Breaking: `quota()` is synchronous and no longer reads the provider; a session's `closedAt` is when its provider released it.
+
+- `readQuota(provider, { maxAgeMs })` reads the provider's quota; `quota(provider)` answers at once from the last reading, the sessions opened since counted as soon as they are in the ledger.
+- A session is recorded closed once its provider has released it; one whose release fails keeps `closedAt` null and counts as lasting as long as it can. A reading and the sessions it does not show split the ledger at the same moment, so each session counts once.
+- `Session.close()` answers every call as the first, so it throws every time when the release failed; `connect()` refuses once closing has begun.
+- `minIdleTimeoutSec`: the shortest idle timeout a provider takes (Anchor: a minute), which bounds how long its sessions last.
+- A ledger made by a later onebrowser is refused.
+
 ## 0.4.0
 
 - `quota()` answers what is left once the sessions not billed yet are paid for: `remaining` is the provider's reading less `unbilled`, what the ledger's sessions that the reading may not show cost, open ones as if they lasted as long as they can. With `{ maxAgeMs }` it reuses a recent reading, a failed one too; the unbilled sessions are counted anew every time.

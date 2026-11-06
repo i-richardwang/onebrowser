@@ -16,6 +16,7 @@ export const defaults = {
   // (credits_used) bill more, about $0.06 an hour and a step of $0.003 in the second minute, which this covers
   price: { perSession: 0.01, perHour: 0.15, stepSec: 60 },
   billingDelayMs: 5 * 60_000, // seen within 10 s
+  minIdleTimeoutSec: 60, // idle_timeout is in whole minutes, at least 1
 };
 
 const headers = (apiKey) => ({ 'anchor-api-key': apiKey });

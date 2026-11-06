@@ -1,6 +1,6 @@
 {
   "name": "onebrowser",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "One interface to remote browser providers: sessions by provider name, a usage ledger, account quotas",
   "keywords": ["browser", "remote-browser", "cdp", "playwright", "steel", "hyperbrowser", "lightpanda", "kernel", "tinyfish", "anchorbrowser", "firecrawl"],
   "license": "MIT",

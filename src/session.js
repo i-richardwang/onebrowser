@@ -1,31 +1,24 @@
-/**
- * A CDP command this often while connected keeps a provider's idle timeout from ending a session that is in use
- * (also while a page waits long for an answer). OneBrowser requires idleTimeoutSec to be at least twice as long.
- */
+/** A CDP command this often keeps a provider's idle timeout from ending a session in use; idleTimeoutSec must be at least twice as long */
 export const KEEP_ALIVE_MS = 15_000;
 
 /** Playwright errors carry a multi-line call log; the first line says what failed */
 const firstLine = (e) => String(e.message).split('\n')[0];
 
 /**
- * One remote browser session, as OneBrowser.openSession() opened it: created by its provider and recorded in the
- * ledger. Use it over CDP: through cdpUrl with any CDP client, or through connect() / newPage() with Playwright.
- * It ends at the latest maxDurationMs after it was opened: this process closes it then (a client using it sees
- * its connection drop). close() releases it; one never closed (its process was killed) is ended by its provider
- * idleTimeoutSec after its client left.
- *
- *   id, provider, egress     the provider's session id, its name, and the egress the session uses
- *   cdpUrl                   CDP WebSocket URL (it may carry the API key: never log it)
- *   openedAt, closedAt       ms: when it was asked for (its provider created it right after), when it was
- *                            closed; closedAt is null while open
+ * A remote browser session (OneBrowser.openSession), used over CDP: cdpUrl with any client (it may carry the API
+ * key: never log it), or connect() / newPage() with Playwright. This process closes it maxDurationMs after it was
+ * opened; one whose process died is ended by its provider idleTimeoutSec (at least its minIdleTimeoutSec) after
+ * its client left.
+ * openedAt: when it was asked for; closedAt: when its provider released it, null until then.
  */
 export class Session {
   #release;
-  #browser = null; // the connection in progress or made: a promise of Playwright's Browser
+  #closing = null;
+  #browser = null; // a promise of Playwright's Browser
   #keepAlive = null;
   #deadline;
 
-  /** release(session): records the session closed and releases it at its provider (OneBrowser) */
+  /** release(session) → closedAt: releases it at its provider and records it closed (OneBrowser) */
   constructor({ provider, remote, openedAt, maxDurationMs, release }) {
     this.provider = provider;
     this.id = remote.id;
@@ -34,13 +27,13 @@ export class Session {
     this.openedAt = openedAt;
     this.closedAt = null;
     this.#release = release;
-    this.#deadline = setTimeout(() => this.close().catch(() => {}), openedAt + maxDurationMs - Date.now()); // a release that fails here leaves the session to the provider's idle timeout
+    this.#deadline = setTimeout(() => this.close().catch(() => {}), openedAt + maxDurationMs - Date.now());
     this.#deadline.unref();
   }
 
-  /** Playwright's Browser over this session's CDP connection, made once; the keep-alive runs while it is connected */
+  /** Playwright's Browser over this session's CDP connection, made once; a keep-alive runs while it is connected */
   connect() {
-    if (this.closedAt) return Promise.reject(new Error(`${this.provider} session ${this.id} is closed`));
+    if (this.#closing) return Promise.reject(new Error(`${this.provider} session ${this.id} is closed`));
     this.#browser ??= this.#connect();
     return this.#browser;
   }
@@ -55,7 +48,7 @@ export class Session {
     }
     try {
       const cdp = await browser.newBrowserCDPSession();
-      if (this.closedAt) throw new Error(`${this.provider} session ${this.id} is closed`); // closed while connecting
+      if (this.#closing) throw new Error(`${this.provider} session ${this.id} is closed`);
       this.#keepAlive = setInterval(() => cdp.send('Browser.getVersion').catch(() => {}), KEEP_ALIVE_MS);
       this.#keepAlive.unref();
     } catch (e) {
@@ -65,10 +58,7 @@ export class Session {
     return browser;
   }
 
-  /**
-   * A new page in the browser's default context. Always a new one: the page a remote browser starts with is not
-   * always one that can be navigated.
-   */
+  /** A new page in the default context: the page a remote browser starts with cannot always be navigated */
   async newPage() {
     const browser = await this.connect();
     const context = browser.contexts()[0] ?? (await browser.newContext());
@@ -76,22 +66,20 @@ export class Session {
   }
 
   /**
-   * Disconnects and releases the session at its provider; only the first call does. The ledger records it closed
-   * in any case. Throws when the provider could not release it: the provider then ends it by itself,
-   * idleTimeoutSec after the disconnect.
+   * Disconnects and releases the session; every call answers as the first. Throws when its provider could not
+   * release it: the ledger then counts it as lasting as long as it can, as its provider ends it by itself.
    */
-  async close() {
-    if (this.closedAt) return;
-    this.closedAt = Date.now();
-    clearTimeout(this.#deadline);
-    clearInterval(this.#keepAlive);
-    const browser = this.#browser;
-    this.#browser = null;
-    await browser?.then((b) => b.close()).catch(() => {});
-    await this.#release(this);
+  close() {
+    return (this.#closing ??= this.#close());
   }
 
-  /** close(): `await using session = await browsers.openSession(…)` releases it at the end of the block */
+  async #close() {
+    clearTimeout(this.#deadline);
+    clearInterval(this.#keepAlive);
+    await this.#browser?.then((b) => b.close()).catch(() => {});
+    this.closedAt = await this.#release(this);
+  }
+
   [Symbol.asyncDispose]() {
     return this.close();
   }

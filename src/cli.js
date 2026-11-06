@@ -30,7 +30,7 @@ const COMMANDS = {
       if (unknown.length) throw new CommandLineError(`unknown provider ${unknown.join(', ')} (expected ${browsers.providers.join(', ')})`);
       const asked = names.length ? names : browsers.providers.filter((p) => isReady(browsers, p));
       if (!asked.length) throw new Error(`no provider has an API key: set ${browsers.providers.map(apiKeyEnv).join(', ')}`);
-      const quotas = await Promise.all(asked.map((provider) => browsers.quota(provider).then((q) => ({ provider, ...q }), (e) => ({ provider, error: e.message }))));
+      const quotas = await Promise.all(asked.map((provider) => browsers.readQuota(provider).then((q) => ({ provider, ...q }), (e) => ({ provider, error: e.message }))));
       if (json) out.write(`${JSON.stringify(quotas, null, 2)}\n`);
       else {
         for (const q of quotas) {

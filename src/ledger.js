@@ -14,20 +14,15 @@ export function defaultLedgerPath() {
   return path.join(data, 'onebrowser', 'sessions.db');
 }
 
-/**
- * sessions   every remote browser session: recorded when it is asked for, once its provider has created it (it
- *            is billed from then on, even if connecting fails), closed when released, and completed with the
- *            provider's own record (duration, proxy traffic) once the session has ended and syncUsage has
- *            fetched it
- */
-const SESSIONS = `
+/** Every remote browser session, from when its provider has created it: it is billed from then on, even if connecting fails */
+const SCHEMA = `
 CREATE TABLE sessions (
   provider      TEXT NOT NULL,
   id            TEXT NOT NULL,            -- the session id its provider gave it
   client        TEXT NOT NULL,            -- the program that opened it (OneBrowser's client)
   opened_at     TEXT NOT NULL,            -- when it was asked for; its provider created it right after
   ends_by       TEXT NOT NULL,            -- when it has ended at the latest, whatever becomes of its process
-  closed_at     TEXT,                     -- when it was released; empty if its process ended first
+  closed_at     TEXT,                     -- when its provider released it; empty until then, and if it never was
   duration_ms   INTEGER,                  -- the provider's record, once the session has ended
   proxy_bytes   INTEGER,                  -- proxy traffic in the provider's record
   synced_at     TEXT,                     -- when the provider's record was stored; empty = not yet
@@ -37,25 +32,25 @@ CREATE INDEX idx_sessions_opened ON sessions(provider, opened_at);
 `;
 
 /**
- * The schema's versions, each the step from the one before (PRAGMA user_version counts the steps taken). A ledger
- * is shared by every program on the machine and outlives the onebrowser version that created it, so an older
- * ledger is brought up to date when it is opened.
+ * The version of SCHEMA (PRAGMA user_version), and the step to it from each earlier one: a ledger outlives the
+ * onebrowser that made it. onebrowser 0.1–0.3 made version 1 and left user_version 0.
  */
-const MIGRATIONS = [
-  // 1: the sessions, as onebrowser 0.1–0.3 kept them
-  `CREATE TABLE IF NOT EXISTS sessions (
-     provider TEXT NOT NULL, id TEXT NOT NULL, client TEXT NOT NULL, opened_at TEXT NOT NULL, closed_at TEXT,
-     duration_ms INTEGER, proxy_bytes INTEGER, synced_at TEXT, PRIMARY KEY (provider, id)
-   );`,
-  // 2: ends_by; the sessions of 1 were all opened with the session options' defaults: 15 min, then 60 s idle
-  `ALTER TABLE sessions RENAME TO sessions_1;
-   DROP INDEX IF EXISTS idx_sessions_opened;
-   ${SESSIONS}
-   INSERT INTO sessions (provider, id, client, opened_at, ends_by, closed_at, duration_ms, proxy_bytes, synced_at)
-     SELECT provider, id, client, opened_at, strftime('%Y-%m-%dT%H:%M:%fZ', opened_at, '+16 minutes'), closed_at, duration_ms, proxy_bytes, synced_at
-     FROM sessions_1;
-   DROP TABLE sessions_1;`,
-];
+const VERSION = 2;
+const UPGRADES = {
+  // 1 → 2: ends_by, as if the sessions of 1 had the default session options (15 min, then 60 s idle). Each step
+  // makes its version as that version was, whatever SCHEMA has become since.
+  1: `ALTER TABLE sessions RENAME TO sessions_1;
+      DROP INDEX idx_sessions_opened;
+      CREATE TABLE sessions (
+        provider TEXT NOT NULL, id TEXT NOT NULL, client TEXT NOT NULL, opened_at TEXT NOT NULL, ends_by TEXT NOT NULL,
+        closed_at TEXT, duration_ms INTEGER, proxy_bytes INTEGER, synced_at TEXT, PRIMARY KEY (provider, id)
+      );
+      CREATE INDEX idx_sessions_opened ON sessions(provider, opened_at);
+      INSERT INTO sessions (provider, id, client, opened_at, ends_by, closed_at, duration_ms, proxy_bytes, synced_at)
+        SELECT provider, id, client, opened_at, strftime('%Y-%m-%dT%H:%M:%fZ', opened_at, '+16 minutes'), closed_at, duration_ms, proxy_bytes, synced_at
+        FROM sessions_1;
+      DROP TABLE sessions_1;`,
+};
 
 /** ms from one ISO time to another */
 const msBetween = (from, to) => `CAST(ROUND((julianday(${to}) - julianday(${from})) * 86400000) AS INTEGER)`;
@@ -73,29 +68,31 @@ const iso = (ms) => new Date(ms).toISOString();
 const int = (x) => (x === null || x === undefined || !Number.isFinite(Number(x)) ? null : Math.trunc(Number(x)));
 
 export class Ledger {
+  #file;
   #db;
   #stmts = new Map();
 
   constructor(file) {
     if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
+    this.#file = file;
     this.#db = new DatabaseSync(file);
     this.#db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;'); // several processes share it
     this.#migrate();
   }
 
-  /** Takes the steps of MIGRATIONS the ledger has not taken, in one transaction: another process may be at it too */
+  /** Makes the ledger, or brings an earlier one up to date, in one transaction: another process may be opening it too */
   #migrate() {
     const version = () => this.#db.prepare('PRAGMA user_version').get().user_version;
-    if (version() === MIGRATIONS.length) return;
-    this.#db.exec('BEGIN IMMEDIATE');
-    try {
-      for (let v = version(); v < MIGRATIONS.length; v++) this.#db.exec(MIGRATIONS[v]);
-      this.#db.exec(`PRAGMA user_version = ${MIGRATIONS.length}`);
-      this.#db.exec('COMMIT');
-    } catch (e) {
-      this.#db.exec('ROLLBACK');
-      throw e;
-    }
+    if (version() === VERSION) return;
+    this.tx(() => {
+      if (!this.#db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'sessions'").get()) this.#db.exec(SCHEMA);
+      else {
+        const from = version() || 1;
+        if (from > VERSION) throw new Error(`onebrowser: the ledger ${this.#file} was made by a later onebrowser (schema ${from}; this one knows ${VERSION})`);
+        for (let v = from; v < VERSION; v++) this.#db.exec(UPGRADES[v]);
+      }
+      this.#db.exec(`PRAGMA user_version = ${VERSION}`);
+    });
   }
 
   #q(sql) {
@@ -112,24 +109,21 @@ export class Ledger {
     this.#q('UPDATE sessions SET closed_at=? WHERE provider=? AND id=? AND closed_at IS NULL').run(iso(closedAt), provider, id);
   }
 
-  /** The record of one provider's sessions, as a provider adapter reads it for its quota (providers/index.js) */
-  history(provider) {
+  /** The provider's sessions that a quota reading shows, those that ended before `billedBefore` (ms); openSince() has the rest */
+  history(provider, billedBefore) {
     return {
-      /** Session time (ms) of the sessions opened since `since` (ms) that have ended, each at most as long as it can have lasted */
+      /** Their session time (ms) since `since` (ms), each as long as it can have lasted while it has no timing */
       endedSessionMsSince: (since) =>
-        this.#q(`SELECT COALESCE(SUM(${SESSION_MS_AT_MOST}), 0) ms FROM sessions WHERE provider=? AND opened_at >= ? AND ${ENDED_AT} < ?`).get(provider, iso(since), iso(Date.now())).ms,
+        this.#q(`SELECT COALESCE(SUM(${SESSION_MS_AT_MOST}), 0) ms FROM sessions WHERE provider=? AND opened_at >= ? AND ${ENDED_AT} < ?`).get(provider, iso(since), iso(billedBefore)).ms,
     };
   }
 
-  /**
-   * The sessions of `provider` still open at `at` (ms): those open now, and those that have ended since.
-   * [{ durationMs }]: each as long as it lasted, or can last at most while it has no timing
-   */
-  openAfter(provider, at) {
+  /** The provider's sessions open at any time since `at` (ms): [{ durationMs }], as long as they can last while untimed */
+  openSince(provider, at) {
     return this.#q(`SELECT ${SESSION_MS_AT_MOST} durationMs FROM sessions WHERE provider=? AND ${ENDED_AT} >= ?`).all(provider, iso(at));
   }
 
-  /** Sessions with one of `providers` whose provider's record has not been stored yet: [{ provider, id, openedAt, closedAt }] (ISO times) */
+  /** Sessions of `providers` without their provider's record yet: [{ provider, id, openedAt, closedAt }] (ISO times) */
   awaitingUsage(providers) {
     return this.#q(
       'SELECT provider, id, opened_at openedAt, closed_at closedAt FROM sessions WHERE synced_at IS NULL AND provider IN (SELECT value FROM json_each(?)) ORDER BY opened_at',
@@ -140,8 +134,9 @@ export class Ledger {
     this.#q('UPDATE sessions SET duration_ms=?, proxy_bytes=?, synced_at=? WHERE provider=? AND id=?').run(int(durationMs), int(proxyBytes), iso(Date.now()), provider, id);
   }
 
+  /** Runs fn in a transaction that takes the write lock at once: another process may be writing too */
   tx(fn) {
-    this.#db.exec('BEGIN');
+    this.#db.exec('BEGIN IMMEDIATE');
     try {
       const r = fn();
       this.#db.exec('COMMIT');
