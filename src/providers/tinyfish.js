@@ -10,6 +10,8 @@ import { json } from './http.js';
 export const defaults = {
   apiBase: 'https://api.browser.tinyfish.ai',
   walletUrl: 'https://agent.tinyfish.ai/v1/wallet',
+  price: { perHour: 0.12, stepSec: 60 }, // USD: $0.002 a minute, proxy included; its rounding is not documented
+  billingDelayMs: 5 * 60_000, // seen within 64 s
 };
 
 const headers = (apiKey) => ({ 'X-API-Key': apiKey });

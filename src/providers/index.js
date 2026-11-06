@@ -1,3 +1,4 @@
+import { checkPrice } from '../cost.js';
 import * as anchor from './anchor.js';
 import * as firecrawl from './firecrawl.js';
 import * as hyperbrowser from './hyperbrowser.js';
@@ -8,9 +9,11 @@ import * as tinyfish from './tinyfish.js';
 
 /**
  * Provider adapters, by provider name: the only provider-specific code. Each exports:
- *   defaults                 its settings (API base URLs, plan facts such as monthlyHours); OneBrowser's
- *                            `providers` option overrides them per provider. The API key is not among them:
- *                            each function gets it as its own argument
+ *   defaults                 its settings; OneBrowser's `providers` option overrides them per provider (the API
+ *                            key is not among them: each function gets it as its own argument):
+ *       price                what its sessions cost, in the unit of its quota (cost.js)
+ *       billingDelayMs       how long after a session has ended its quota reading shows its cost, at the latest
+ *       and its own          API base URLs, plan facts such as monthlyHours
  *   createSession(settings, apiKey, options) → { id, cdpUrl, egress }
  *       options: { proxyCountry, idleTimeoutSec, maxDurationMs } (OneBrowser.openSession), mapped onto the
  *       provider's own parameters. Throws on failure; QuotaError (errors.js) when the provider refuses the
@@ -36,4 +39,14 @@ const CONTRACT = ['createSession', 'releaseSession', 'sessionUsage', 'quota'];
 export function checkAdapter(name, adapter) {
   const missing = CONTRACT.filter((f) => typeof adapter?.[f] !== 'function');
   if (missing.length) throw new Error(`provider ${name}: its adapter lacks ${missing.join(', ')}`);
+}
+
+/** Throws unless `settings` (an adapter's defaults with a program's settings on top) have a price and a billing delay */
+export function checkSettings(name, settings) {
+  try {
+    checkPrice(settings.price);
+  } catch (e) {
+    throw new Error(`provider ${name}: ${e.message}`);
+  }
+  if (!(Number.isFinite(settings.billingDelayMs) && settings.billingDelayMs >= 0)) throw new Error(`provider ${name}: billingDelayMs must be a number ≥ 0, not ${settings.billingDelayMs}`);
 }

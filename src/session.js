@@ -16,7 +16,8 @@ const firstLine = (e) => String(e.message).split('\n')[0];
  *
  *   id, provider, egress     the provider's session id, its name, and the egress the session uses
  *   cdpUrl                   CDP WebSocket URL (it may carry the API key: never log it)
- *   openedAt, closedAt       ms; closedAt is null while open
+ *   openedAt, closedAt       ms: when it was asked for (its provider created it right after), when it was
+ *                            closed; closedAt is null while open
  */
 export class Session {
   #release;
@@ -25,15 +26,15 @@ export class Session {
   #deadline;
 
   /** release(session): records the session closed and releases it at its provider (OneBrowser) */
-  constructor({ provider, remote, maxDurationMs, release }) {
+  constructor({ provider, remote, openedAt, maxDurationMs, release }) {
     this.provider = provider;
     this.id = remote.id;
     this.egress = remote.egress;
     this.cdpUrl = remote.cdpUrl;
-    this.openedAt = Date.now();
+    this.openedAt = openedAt;
     this.closedAt = null;
     this.#release = release;
-    this.#deadline = setTimeout(() => this.close().catch(() => {}), maxDurationMs); // a release that fails here leaves the session to the provider's idle timeout
+    this.#deadline = setTimeout(() => this.close().catch(() => {}), openedAt + maxDurationMs - Date.now()); // a release that fails here leaves the session to the provider's idle timeout
     this.#deadline.unref();
   }
 

@@ -6,6 +6,8 @@ const DAY_MS = 864e5;
 
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
+const round = (x) => Number(x.toFixed(2));
+
 /** The command line is wrong: exit status 2 */
 class CommandLineError extends Error {}
 
@@ -32,7 +34,7 @@ const COMMANDS = {
       if (json) out.write(`${JSON.stringify(quotas, null, 2)}\n`);
       else {
         for (const q of quotas) {
-          const text = q.error ? `unknown (${q.error})` : `${Number(q.remaining.toFixed(2))} ${q.unit} left${q.renewsAt ? `, renews ${day(q.renewsAt)}` : ''}`;
+          const text = q.error ? `unknown (${q.error})` : `${round(q.remaining)} ${q.unit} left${q.unbilled ? ` (after ${round(q.unbilled)} not billed yet)` : ''}${q.renewsAt ? `, renews ${day(q.renewsAt)}` : ''}`;
           out.write(`${q.provider.padEnd(14)} ${text}\n`);
         }
       }
@@ -66,7 +68,8 @@ const COMMANDS = {
 const help = (providers) => `onebrowser: the quotas of remote browser provider accounts, and the sessions in this machine's ledger
 
 Usage:
-  onebrowser quota [PROVIDER...]   what each provider account has left; default: every provider with an API key
+  onebrowser quota [PROVIDER...]   what each provider account has left, less what the sessions in the ledger
+                                   that it has not billed yet cost; default: every provider with an API key
   onebrowser usage [--days N]      sessions per UTC day, provider and client in the last N UTC days, today
                                    included (default 30), after fetching the providers' records of ended sessions
 

@@ -8,6 +8,8 @@ import { json } from './http.js';
 export const defaults = {
   apiBase: 'https://api.steel.dev/v1',
   connectBase: 'wss://connect.steel.dev',
+  price: { perHour: 0.1, stepSec: 60 }, // USD on the Launch plan, by the minute rounded up
+  billingDelayMs: 5 * 60_000, // seen within 11 s
 };
 
 const headers = (apiKey) => ({ 'steel-api-key': apiKey });

@@ -14,6 +14,8 @@ import { utcMonth } from './month.js';
 export const defaults = {
   apiBase: 'https://api.onkernel.com',
   monthlyHours: 80, // headless browser hours a month that the free plan's credits pay for, rounded down
+  price: { perHour: 1 }, // the quota is in headless browser hours, billed by the second
+  billingDelayMs: 5 * 60_000, // seen within 10 s
 };
 
 const headers = (apiKey) => ({ Authorization: `Bearer ${apiKey}` });
@@ -42,8 +44,8 @@ export async function releaseSession(settings, apiKey, session) {
 /**
  * Browser hours left of the month's monthlyHours, after the uptime of every session of the account this month:
  * Kernel's own records, which include sessions opened by any program. The sessions are listed newest first, so
- * the listing stops at a page that holds none of this month. The hours are assumed to renew with each calendar
- * month (UTC).
+ * the listing stops at a page that holds none of this month. Kernel counts usage from the first of each month,
+ * 00:00 UTC (https://www.kernel.sh/docs/info/spending-caps), and has no API that reads what its credits leave.
  */
 export async function quota(settings, apiKey) {
   const month = utcMonth();

@@ -13,7 +13,7 @@ for (const p of Object.keys(ADAPTERS)) for (const v of [apiKeyEnv(p), `${apiKeyE
 
 let sessionIds = 0;
 const adapter = (over = {}) => ({
-  defaults: {},
+  defaults: { price: { perHour: 0.6, stepSec: 60 }, billingDelayMs: 0 },
   async createSession() {
     return { id: `s${++sessionIds}`, cdpUrl: 'wss://fake/cdp', egress: 'fake IP' };
   },
@@ -49,11 +49,15 @@ test('quota reads every provider with an API key; a failed reading is shown and 
   assert.equal(text.status, 0);
   assert.match(text.out, /^a +12\.35 USD left\nb +3 hours left, renews 2026-12-01\n$/);
 
+  const busy = browsersWith(fakes);
+  await busy.openSession({ provider: 'a' }); // 16 minutes at most, at $0.01 a minute
+  assert.match((await cli(['quota', 'a'], busy)).out, /^a +12\.19 USD left \(after 0\.16 not billed yet\)\n$/);
+
   const json = await cli(['quota', '--json'], browsersWith(fakes));
   assert.equal(json.status, 1);
   assert.deepEqual(JSON.parse(json.out), [
-    { provider: 'a', remaining: 12.345, unit: 'USD', renewsAt: null },
-    { provider: 'b', remaining: 3, unit: 'hours', renewsAt: Date.UTC(2026, 11, 1) },
+    { provider: 'a', remaining: 12.345, unbilled: 0, unit: 'USD', renewsAt: null },
+    { provider: 'b', remaining: 3, unbilled: 0, unit: 'hours', renewsAt: Date.UTC(2026, 11, 1) },
     { provider: 'c', error: 'HTTP 500' },
   ]);
 });

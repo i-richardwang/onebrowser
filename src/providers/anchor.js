@@ -12,6 +12,10 @@ import { json } from './http.js';
  */
 export const defaults = {
   apiBase: 'https://api.anchorbrowser.io/v1',
+  // credits ($1 each): $0.01 a browser and, by its docs, $0.05 an hour by the minute; the sessions' own records
+  // (credits_used) bill more, about $0.06 an hour and a step of $0.003 in the second minute, which this covers
+  price: { perSession: 0.01, perHour: 0.15, stepSec: 60 },
+  billingDelayMs: 5 * 60_000, // seen within 10 s
 };
 
 const headers = (apiKey) => ({ 'anchor-api-key': apiKey });

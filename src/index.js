@@ -1,7 +1,8 @@
+import { sessionCost } from './cost.js';
 import { readApiKey } from './credentials.js';
 import { QuotaError } from './errors.js';
 import { defaultLedgerPath, Ledger } from './ledger.js';
-import { ADAPTERS, checkAdapter } from './providers/index.js';
+import { ADAPTERS, checkAdapter, checkSettings } from './providers/index.js';
 import { KEEP_ALIVE_MS, Session } from './session.js';
 
 export { apiKeyEnv } from './credentials.js';
@@ -34,9 +35,20 @@ export function sessionOptions(options = {}) {
 }
 
 /**
+ * How long a session with these options (sessionOptions) lasts at most, whatever becomes of its process: this
+ * process ends it at maxDurationMs, and its provider idleTimeoutSec after its client left, should the process die
+ * or its release fail before
+ */
+const sessionMsAtMost = (o) => o.maxDurationMs + o.idleTimeoutSec * 1000;
+
+/**
  * Remote browsers from several providers behind one interface: a session is asked for by provider name, the way
  * an LLM request names its model. Every session is recorded in a ledger (ledger.js), which the usage of each
  * provider account and, for providers that cannot report it themselves, its quota are read from.
+ *
+ * What is left of an account's quota is what its provider reads, less what the sessions it has not billed yet
+ * cost (quota()): the ledger knows those, and each provider's price (cost.js) what they cost. So a program can
+ * tell, before it opens a session, whether the account can pay for it.
  *
  * Which provider to use, how many sessions to hold and when to stop using one are the caller's decisions:
  * OneBrowser opens the sessions it is asked for.
@@ -53,6 +65,7 @@ export class OneBrowser {
   #providers = new Map(); // name → { adapter, settings: its defaults with the given ones on top, apiKey: the one given }
   #ledger = null;
   #open = new Set();
+  #readings = new Map(); // provider → its last quota reading (#reading)
 
   constructor({ client, ledgerPath = defaultLedgerPath(), providers = {}, adapters = {} }) {
     if (!client?.trim()) throw new Error('onebrowser: client must name the program using it');
@@ -60,8 +73,10 @@ export class OneBrowser {
     this.ledgerPath = ledgerPath;
     for (const [name, adapter] of Object.entries({ ...ADAPTERS, ...adapters })) {
       checkAdapter(name, adapter);
-      const { apiKey, ...settings } = providers[name] ?? {};
-      this.#providers.set(name, { adapter, settings: { ...adapter.defaults, ...settings }, apiKey });
+      const { apiKey, ...given } = providers[name] ?? {};
+      const settings = { ...adapter.defaults, ...given };
+      checkSettings(name, settings);
+      this.#providers.set(name, { adapter, settings, apiKey });
     }
     const unknown = Object.keys(providers).filter((name) => !this.#providers.has(name));
     if (unknown.length) throw new Error(`onebrowser: no adapter for provider ${unknown.join(', ')}`);
@@ -76,10 +91,16 @@ export class OneBrowser {
     return (this.#ledger ??= new Ledger(this.ledgerPath));
   }
 
-  /** The adapter, settings and API key of `provider`; throws when it is unknown or has no API key */
-  #ready(provider) {
+  /** The adapter, settings and the API key given of `provider`; throws when it is unknown */
+  #known(provider) {
     const p = this.#providers.get(provider);
     if (!p) throw new Error(`unknown provider ${provider} (expected ${this.providers.join(', ')})`);
+    return p;
+  }
+
+  /** The adapter, settings and API key of `provider`; throws when it is unknown or has no API key */
+  #ready(provider) {
+    const p = this.#known(provider);
     return { ...p, apiKey: readApiKey(provider, p.apiKey) };
   }
 
@@ -96,6 +117,7 @@ export class OneBrowser {
   async openSession({ provider, ...options }) {
     const { adapter, settings, apiKey } = this.#ready(provider);
     const o = sessionOptions(options);
+    const openedAt = Date.now(); // the provider bills the session from some time after this
     let remote;
     try {
       remote = await adapter.createSession(settings, apiKey, o);
@@ -104,7 +126,7 @@ export class OneBrowser {
       throw new Error(`failed to create a ${provider} session: ${e.message}`);
     }
     const session = new Session({
-      provider, remote, maxDurationMs: o.maxDurationMs,
+      provider, remote, openedAt, maxDurationMs: o.maxDurationMs,
       release: async (s) => {
         this.#open.delete(s);
         this.#store.closed(s);
@@ -112,7 +134,7 @@ export class OneBrowser {
       },
     });
     try {
-      this.#store.opened({ provider, id: session.id, client: this.client, openedAt: session.openedAt });
+      this.#store.opened({ provider, id: session.id, client: this.client, openedAt, endsBy: openedAt + sessionMsAtMost(o) });
     } catch (e) {
       await session.close().catch(() => {}); // a session the ledger has no record of is not handed out
       throw e;
@@ -122,14 +144,53 @@ export class OneBrowser {
   }
 
   /**
-   * What is left of the account's quota with `provider`: { remaining, unit, renewsAt } in the provider's own
-   * unit; renewsAt (ms) when it renews by itself, null when only a top-up renews it. Throws when it cannot be read.
+   * What is left of the account's quota with `provider`, in the provider's own unit: { remaining, unbilled, unit,
+   * renewsAt }. remaining: what the provider reads, less `unbilled`: what the sessions in the ledger that the
+   * reading may not show yet cost, each at the provider's price (cost.js). Those are the sessions that had not
+   * ended billingDelayMs before the reading: open ones as if they lasted as long as they can, ended ones as long
+   * as they lasted. renewsAt (ms) when the quota renews by itself, null when only a top-up renews it.
+   *
+   * The provider is read anew unless a reading started at most maxAgeMs ago, or still in progress, can be used
+   * (a failed one too: it throws again); what is unbilled is worked out from the ledger every time, so it includes
+   * the sessions opened since, by any program sharing the ledger. Throws when the provider cannot be read.
    */
-  async quota(provider) {
+  async quota(provider, { maxAgeMs = 0 } = {}) {
+    const { settings } = this.#known(provider);
+    const reading = this.#reading(provider, maxAgeMs);
+    const answer = await reading.answer;
+    const sessions = this.#store.openAfter(provider, reading.startedAt - settings.billingDelayMs);
+    const unbilled = sessions.reduce((cost, s) => cost + sessionCost(settings.price, s.durationMs), 0);
+    return { remaining: answer.remaining - unbilled, unbilled, unit: answer.unit, renewsAt: answer.renewsAt ?? null };
+  }
+
+  /**
+   * The provider's quota reading, { startedAt, answer: a promise of the adapter's answer }: the last one if it
+   * started at most maxAgeMs ago or is still in progress, else a new one. A failed reading counts as one too: its
+   * error is the answer until maxAgeMs have passed.
+   */
+  #reading(provider, maxAgeMs) {
+    const last = this.#readings.get(provider);
+    if (last && (!last.done || Date.now() - last.startedAt <= maxAgeMs)) return last;
     const { adapter, settings, apiKey } = this.#ready(provider);
-    const q = await adapter.quota(settings, apiKey, this.#store.history(provider));
-    if (!(Number.isFinite(q?.remaining) && typeof q.unit === 'string')) throw new Error(`${provider} answered no quota: ${JSON.stringify(q)}`);
-    return { remaining: q.remaining, unit: q.unit, renewsAt: q.renewsAt ?? null };
+    const reading = { startedAt: Date.now(), done: false };
+    reading.answer = adapter
+      .quota(settings, apiKey, this.#store.history(provider))
+      .then((q) => {
+        if (!(Number.isFinite(q?.remaining) && typeof q.unit === 'string')) throw new Error(`${provider} answered no quota: ${JSON.stringify(q)}`);
+        return q;
+      })
+      .finally(() => (reading.done = true));
+    reading.answer.catch(() => {}); // awaited by the callers; not an unhandled rejection while cached
+    this.#readings.set(provider, reading);
+    return reading;
+  }
+
+  /**
+   * What a session with `provider` and these session options (sessionOptions) costs at most, in the unit of its
+   * quota: as if it lasted as long as it can, at the provider's price
+   */
+  maxSessionCost(provider, options) {
+    return sessionCost(this.#known(provider).settings.price, sessionMsAtMost(sessionOptions(options)));
   }
 
   /**

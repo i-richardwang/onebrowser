@@ -13,6 +13,8 @@ const MAX_CONNECTION_MS = 15 * 60_000;
 export const defaults = {
   connectBase: 'wss://euwest.cloud.lightpanda.io/ws',
   monthlyHours: 10, // browser hours a month on the free plan
+  price: { perHour: 1 }, // the quota is in browser hours, billed by the second
+  billingDelayMs: 0, // the quota is the ledger's record
 };
 
 export async function createSession(settings, apiKey, { proxyCountry }) {
@@ -30,13 +32,13 @@ export async function releaseSession() {}
 
 /**
  * Browser hours left of the month's monthlyHours. Lightpanda's console shows the month's usage, but the token
- * cannot read it: the month's usage is the ledger's record of the sessions (history), which is all of it while
- * the account is used through ledgers of this machine only. The hours are assumed to renew with each calendar
- * month (UTC).
+ * cannot read it: the month's usage is the ledger's record of the sessions that have ended (history), which is
+ * all of it while the account is used through ledgers of this machine only. The hours are assumed to renew with
+ * each calendar month (UTC).
  */
 export async function quota(settings, apiKey, history) {
   const month = utcMonth();
-  const usedHours = history.sessionMsSince(month.start) / 3_600_000;
+  const usedHours = history.endedSessionMsSince(month.start) / 3_600_000;
   return { remaining: settings.monthlyHours - usedHours, unit: 'hours', renewsAt: month.next };
 }
 

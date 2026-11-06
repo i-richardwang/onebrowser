@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- `quota()` answers what is left once the sessions not billed yet are paid for: `remaining` is the provider's reading less `unbilled`, what the ledger's sessions that the reading may not show cost, open ones as if they lasted as long as they can. With `{ maxAgeMs }` it reuses a recent reading, a failed one too; the unbilled sessions are counted anew every time.
+- `maxSessionCost(provider, options)`: what a session with these options costs at most, in the unit of the provider's quota.
+- Every provider has a `price` and a `billingDelayMs`, settings a program can override for its plan.
+- The ledger records when each session ends at the latest; a ledger of an earlier version is brought up to date when opened. A session's `openedAt` is when it was asked for.
+- Lightpanda's quota counts a session no process closed as lasting as long as it could, not as nothing.
+
 ## 0.3.0
 
 - Provider `firecrawl`: [Firecrawl](https://www.firecrawl.dev)'s Browser Sandbox, with its location for `proxyCountry` and its credits as the quota.

@@ -9,6 +9,8 @@ import { json } from './http.js';
  */
 export const defaults = {
   apiBase: 'https://api.hyperbrowser.ai/api',
+  price: { perHour: 100, stepSec: 60 }, // credits; its rounding is not documented
+  billingDelayMs: 5 * 60_000, // billed while the session runs, seen within 10 s of its end
 };
 
 const headers = (apiKey) => ({ 'x-api-key': apiKey });
