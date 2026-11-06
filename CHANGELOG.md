@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Provider `firecrawl`: [Firecrawl](https://www.firecrawl.dev)'s Browser Sandbox, with its location for `proxyCountry` and its credits as the quota.
+
 ## 0.2.0
 
 - Provider `anchor`: [Anchor Browser](https://anchorbrowser.io), with its residential proxy for `proxyCountry` and its credits as the quota.

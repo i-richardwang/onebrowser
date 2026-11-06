@@ -8,7 +8,7 @@ import { apiKeyEnv, OneBrowser, QuotaError, sessionOptions } from '../src/index.
 import { ADAPTERS } from '../src/providers/index.js';
 import { utcMonth } from '../src/providers/month.js';
 
-const { anchor, hyperbrowser, kernel, lightpanda, steel, tinyfish } = ADAPTERS;
+const { anchor, firecrawl, hyperbrowser, kernel, lightpanda, steel, tinyfish } = ADAPTERS;
 const options = { proxyCountry: null, idleTimeoutSec: 60, maxDurationMs: 15 * 60_000 };
 
 /** Runs fn with fetch answered offline by answer(url) → { status, body, headers }: what fn returned, and the requests it made */
@@ -61,7 +61,7 @@ test('a OneBrowser names its client; settings and adapters must be for known pro
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { nope: {} } }), /no adapter for provider nope/);
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', adapters: { half: { createSession() {} } } }), /half: its adapter lacks releaseSession, sessionUsage, quota/);
   const b = new OneBrowser({ client: 'x', ledgerPath: ':memory:' });
-  assert.deepEqual(b.providers, ['tinyfish', 'steel', 'hyperbrowser', 'lightpanda', 'kernel', 'anchor']);
+  assert.deepEqual(b.providers, ['tinyfish', 'steel', 'hyperbrowser', 'lightpanda', 'kernel', 'anchor', 'firecrawl']);
   assert.throws(() => b.checkReady('nope'), /unknown provider nope/);
 });
 
@@ -225,7 +225,8 @@ test('a Lightpanda session is a CDP URL with the token and the datacenter proxy;
   assert.equal(a.cdpUrl, `${lightpanda.defaults.connectBase}?token=tok&proxy=datacenter`);
   assert.equal(b.cdpUrl, `${lightpanda.defaults.connectBase}?token=tok&proxy=datacenter&country=de`);
 
-  const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const now = Date.now();
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
   const usage = await lightpanda.sessionUsage(lightpanda.defaults, 'tok', [
     { id: 'closed', openedAt: at(10), closedAt: at(7) },
     { id: 'open', openedAt: at(5), closedAt: null }, // may still be running
@@ -324,4 +325,39 @@ test('an Anchor session takes the idle timeout rounded down to whole minutes, at
 
   const { value: q } = await withFetch(() => ({ body: { credits: 4.97, credits_used: 0.03, tier: 'monthly_free' } }), () => anchor.quota(settings, 'key'));
   assert.deepEqual(q, { remaining: 4.97, unit: 'credits' });
+});
+
+test('a Firecrawl session takes its timeouts in whole seconds, ttl from 30 s to 1 h, without live view or ad blocking, and is deleted; 402 is out of credits; ended sessions report their usage', async () => {
+  const settings = firecrawl.defaults;
+  const created = { success: true, id: 'f1', cdpUrl: 'wss://hangar.firecrawl.dev/cdp?token=x', liveViewUrl: '', expiresAt: '2026-11-06T06:30:32.000Z' };
+  const { requests } = await withFetch(
+    (url) => ({ body: url.endsWith('/interact') ? created : { success: true, status: 'stopped', creditsBilled: 3 } }),
+    async () => {
+      assert.deepEqual(await firecrawl.createSession(settings, 'key', { ...options, proxyCountry: 'DE' }), { id: 'f1', cdpUrl: created.cdpUrl, egress: 'proxy DE' });
+      assert.deepEqual(await firecrawl.createSession(settings, 'key', { proxyCountry: null, idleTimeoutSec: 7200, maxDurationMs: 2 * 3_600_000 }), { id: 'f1', cdpUrl: created.cdpUrl, egress: 'proxy US' });
+      await firecrawl.createSession(settings, 'key', { proxyCountry: null, idleTimeoutSec: 45.5, maxDurationMs: 10_500 });
+      await firecrawl.releaseSession(settings, 'key', { id: 'f1' });
+    },
+  );
+  const post = (body) => ({ method: 'POST', url: `${settings.apiBase}/interact`, body: { ...body, streamWebView: false, blockAds: false } });
+  assert.deepEqual(requests, [
+    post({ ttl: 900, activityTtl: 60, location: { country: 'DE' } }),
+    post({ ttl: 3600, activityTtl: 3600 }),
+    post({ ttl: 30, activityTtl: 45 }),
+    { method: 'DELETE', url: `${settings.apiBase}/interact/f1`, body: undefined },
+  ]);
+  await withFetch(() => ({ status: 402, body: { error: 'Payment required to access this resource.' } }), () => assert.rejects(firecrawl.createSession(settings, 'key', options), QuotaError));
+
+  const records = { done: { success: true, status: 'stopped', sessionDurationMs: 86_000, creditsBilled: 3 }, running: { success: true, status: 'running' } };
+  const { value: usage } = await withFetch(
+    (url) => ({ body: records[new URL(url).pathname.split('/').pop()] }),
+    () => firecrawl.sessionUsage(settings, 'key', ['done', 'running'].map((id) => ({ id }))),
+  );
+  assert.deepEqual(usage, [{ id: 'done', durationMs: 86_000, proxyBytes: null }]);
+
+  const period = { remainingCredits: 1380, planCredits: 1000, billingPeriodStart: '2026-11-03T02:32:29.174Z', billingPeriodEnd: '2026-12-03T02:32:29.174Z' };
+  const { value: q } = await withFetch(() => ({ body: { success: true, data: period } }), () => firecrawl.quota(settings, 'key'));
+  assert.deepEqual(q, { remaining: 1380, unit: 'credits', renewsAt: Date.parse(period.billingPeriodEnd) });
+  const { value: unrenewed } = await withFetch(() => ({ body: { success: true, data: { ...period, billingPeriodEnd: null } } }), () => firecrawl.quota(settings, 'key'));
+  assert.equal(unrenewed.renewsAt, null);
 });

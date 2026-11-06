@@ -1,4 +1,5 @@
 import * as anchor from './anchor.js';
+import * as firecrawl from './firecrawl.js';
 import * as hyperbrowser from './hyperbrowser.js';
 import * as kernel from './kernel.js';
 import * as lightpanda from './lightpanda.js';
@@ -27,7 +28,7 @@ import * as tinyfish from './tinyfish.js';
  * Their requests go through http.js, which turns every status other than 2xx into an HttpError: an adapter
  * handles only the statuses that mean something of their own.
  */
-export const ADAPTERS = { tinyfish, steel, hyperbrowser, lightpanda, kernel, anchor };
+export const ADAPTERS = { tinyfish, steel, hyperbrowser, lightpanda, kernel, anchor, firecrawl };
 
 const CONTRACT = ['createSession', 'releaseSession', 'sessionUsage', 'quota'];
 
