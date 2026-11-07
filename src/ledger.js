@@ -18,8 +18,8 @@ export function defaultLedgerPath() {
 const SCHEMA = `
 CREATE TABLE sessions (
   provider      TEXT NOT NULL,
-  account       TEXT,                     -- the account it is billed to (Account.id); empty when not known: recorded
-                                          -- before onebrowser 0.6, by a provider with several accounts here since
+  account       TEXT,                     -- the account it is billed to (Account.id); empty when recorded before the
+                                          -- ledger had accounts (schema 2) and not claimed since (claim())
   id            TEXT NOT NULL,            -- the session id its provider gave it
   client        TEXT NOT NULL,            -- the program that opened it (OneBrowser's client)
   opened_at     TEXT NOT NULL,            -- when it was asked for; its provider created it right after
@@ -122,7 +122,7 @@ export class Ledger {
     this.#q('UPDATE sessions SET closed_at=? WHERE account=? AND id=? AND closed_at IS NULL').run(iso(closedAt), account, id);
   }
 
-  /** The provider's sessions whose account is not known are `account`'s */
+  /** The provider's sessions without an account (recorded before schema 3) are `account`'s: the provider's only one */
   claim(provider, account) {
     this.#q('UPDATE sessions SET account=? WHERE provider=? AND account IS NULL').run(account, provider);
   }

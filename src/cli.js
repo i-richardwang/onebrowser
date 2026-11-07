@@ -21,8 +21,8 @@ const GLOBAL_OPTIONS = {
 /** The accounts `names` ask for: each name a provider's (it must have an API key) or one account's id */
 function askedAccounts(browsers, names) {
   return names.flatMap((name) => {
-    const own = browsers.accounts().filter((a) => a.id === name);
-    if (own.length) return own;
+    const own = browsers.accounts().find((a) => a.id === name);
+    if (own) return [own];
     if (!browsers.providers.includes(name)) throw new CommandLineError(`unknown provider or account ${name} (expected ${browsers.providers.join(', ')}, or an account id)`);
     const accounts = browsers.accounts(name);
     if (!accounts.length) throw new Error(`${name} has no API key: set ${apiKeyEnv(name)} or ${apiKeyEnv(name)}_FILE`);

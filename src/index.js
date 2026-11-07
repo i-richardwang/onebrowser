@@ -42,10 +42,7 @@ export class OneBrowser {
     }
   }
 
-  /**
-   * The ledger, opened on first use. Sessions recorded before accounts were (onebrowser 0.5 and earlier) are
-   * the provider's only account's, when it has one here; with several, no one knows which they belong to.
-   */
+  /** The ledger, opened on first use; a provider with one account here claims its sessions recorded without one */
   get #store() {
     if (!this.#ledger) {
       this.#ledger = new Ledger(this.ledgerPath);
