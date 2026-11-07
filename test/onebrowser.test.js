@@ -313,12 +313,54 @@ test('a ledger of onebrowser 0.3 is brought up to date when opened: its sessions
     });
     assert.deepEqual(schema(db), schema(created)); // the same as a new ledger's
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, created.prepare('PRAGMA user_version').get().user_version);
+    const ledgerId = (d) => d.prepare("SELECT value FROM meta WHERE key = 'id'").get().value;
+    assert.match(ledgerId(db), /^[0-9a-f-]{36}$/); // given when brought up to date, and kept
+    assert.notEqual(ledgerId(db), ledgerId(created));
     const row = db.prepare('SELECT opened_at, ends_by FROM sessions').get();
     assert.equal(Date.parse(row.ends_by) - Date.parse(row.opened_at), 16 * 60_000);
+    // A ledger of 0.6 (schema 3 without meta) gets its id without a schema step, so 0.6 still opens it
+    db.exec('DROP TABLE meta');
     created.exec('PRAGMA user_version = 99');
     for (const d of [db, created]) d.close();
+    const sixth = new OneBrowser({ client: 'x', ledgerPath });
+    assert.match(sixth.ledgerId, /^[0-9a-f-]{36}$/);
+    await sixth.close();
+    const reopened = new DatabaseSync(ledgerPath);
+    assert.equal(reopened.prepare('PRAGMA user_version').get().user_version, 3);
+    reopened.close();
     const older = new OneBrowser({ client: 'x', ledgerPath: path.join(dir, 'new.db') });
     assert.throws(() => older.usage({ since: 0 }), /was made by a later onebrowser \(schema 99; this one knows 3\)/);
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('sessions() lists the ledger\'s sessions as recorded, oldest first, with the provider\'s record once synced; ledgerId is the ledger\'s for life', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-ledger-'));
+  const ledgerPath = path.join(dir, 'sessions.db');
+  const a = fakeAdapter({ sessionUsage: async (settings, apiKey, rows) => rows.filter((r) => r.closedAt).map((r) => ({ id: r.id, durationMs: 90_000, proxyBytes: 2e6 })) });
+  try {
+    const b = new OneBrowser({ client: 'crawler', ledgerPath, adapters: { fake: a }, providers: { fake: { apiKeys: ['key'] } } });
+    const before = Date.now();
+    const first = await account(b).openSession();
+    await first.close();
+    const open = await account(b).openSession();
+    const ledgerId = b.ledgerId;
+    assert.match(ledgerId, /^[0-9a-f-]{36}$/);
+    const listed = b.sessions({ since: 0 });
+    assert.deepEqual(listed.map((s) => [s.provider, s.account, s.id, s.client]), [['fake', FAKE, 's1', 'crawler'], ['fake', FAKE, 's2', 'crawler']]);
+    const [closed, running] = listed;
+    assert.ok(closed.openedAt >= before && closed.closedAt >= closed.openedAt && closed.endsBy === closed.openedAt + 16 * 60_000);
+    assert.deepEqual([closed.durationMs, closed.proxyBytes, closed.syncedAt, running.closedAt, running.syncedAt], [null, null, null, null, null]);
+    assert.deepEqual(await b.syncUsage(), { reported: 1, failed: [] });
+    const synced = b.sessions({ since: 0 })[0];
+    assert.deepEqual([synced.durationMs, synced.proxyBytes], [90_000, 2e6]);
+    assert.ok(synced.syncedAt >= before);
+    assert.deepEqual(b.sessions({ since: open.openedAt }).map((s) => s.id), ['s2']); // since: by when a session was opened
+    await b.close();
+    const again = new OneBrowser({ client: 'reader', ledgerPath, adapters: { fake: a } });
+    assert.equal(again.ledgerId, ledgerId);
+    await again.close();
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

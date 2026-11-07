@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 /**
@@ -65,6 +66,13 @@ const UPGRADES = {
       DROP TABLE sessions_2;`,
 };
 
+/**
+ * Beside the schema, meta holds the ledger's own id (`id`): a program that copies the ledger's record elsewhere
+ * tells it from another ledger's by it. It came with onebrowser 0.7 without a schema step, made whenever it is
+ * missing, so that a ledger a 0.7 has opened still opens in 0.6, which knows schema 3 too and ignores the table.
+ */
+const META = 'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;';
+
 /** ms from one ISO time to another */
 const msBetween = (from, to) => `CAST(ROUND((julianday(${to}) - julianday(${from})) * 86400000) AS INTEGER)`;
 
@@ -96,16 +104,29 @@ export class Ledger {
   /** Makes the ledger, or brings an earlier one up to date, in one transaction: another process may be opening it too */
   #migrate() {
     const version = () => this.#db.prepare('PRAGMA user_version').get().user_version;
-    if (version() === VERSION) return;
-    this.tx(() => {
-      if (!this.#db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'sessions'").get()) this.#db.exec(SCHEMA);
-      else {
-        const from = version() || 1;
-        if (from > VERSION) throw new Error(`onebrowser: the ledger ${this.#file} was made by a later onebrowser (schema ${from}; this one knows ${VERSION})`);
-        for (let v = from; v < VERSION; v++) this.#db.exec(UPGRADES[v]);
-      }
-      this.#db.exec(`PRAGMA user_version = ${VERSION}`);
-    });
+    const has = (table) => this.#db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table);
+    if (version() !== VERSION) {
+      this.tx(() => {
+        if (!has('sessions')) this.#db.exec(SCHEMA);
+        else {
+          const from = version() || 1;
+          if (from > VERSION) throw new Error(`onebrowser: the ledger ${this.#file} was made by a later onebrowser (schema ${from}; this one knows ${VERSION})`);
+          for (let v = from; v < VERSION; v++) this.#db.exec(UPGRADES[v]);
+        }
+        this.#db.exec(`PRAGMA user_version = ${VERSION}`);
+      });
+    }
+    if (!has('meta')) {
+      this.tx(() => {
+        this.#db.exec(META);
+        this.#db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('id', ?)").run(randomUUID());
+      });
+    }
+  }
+
+  /** This ledger's id, given when it was made or first opened by a onebrowser that has ids, and kept for life */
+  get id() {
+    return this.#q("SELECT value FROM meta WHERE key = 'id'").get().value;
   }
 
   #q(sql) {
@@ -171,6 +192,17 @@ export class Ledger {
               SUM(synced_at IS NULL) unsynced, COALESCE(SUM(proxy_bytes), 0) proxyBytes
        FROM sessions WHERE opened_at >= ? GROUP BY day, provider, account, client ORDER BY day, provider, account, client`,
     ).all(iso(since));
+  }
+
+  /** See OneBrowser.sessions() */
+  sessions(since) {
+    return this.#q(
+      `SELECT provider, COALESCE(account, provider) account, id, client, opened_at openedAt, ends_by endsBy, closed_at closedAt,
+              duration_ms durationMs, proxy_bytes proxyBytes, synced_at syncedAt
+       FROM sessions WHERE opened_at >= ? ORDER BY opened_at, provider, id`,
+    )
+      .all(iso(since))
+      .map((r) => ({ ...r, openedAt: Date.parse(r.openedAt), endsBy: Date.parse(r.endsBy), closedAt: r.closedAt && Date.parse(r.closedAt), syncedAt: r.syncedAt && Date.parse(r.syncedAt) }));
   }
 
   close() {

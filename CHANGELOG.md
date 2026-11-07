@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- `sessions({ since })`: the ledger's sessions one by one, as recorded, for a program that keeps its own record of them (such as a usage dashboard's collector).
+- `ledgerId`: each ledger has an id of its own, given when it is made or first opened by this version and kept for its life; `usage --json` prints it. It lives in a table beside the schema, without a schema step, so a ledger this version has opened still opens in 0.6.
+
 ## 0.6.0
 
 Breaking: sessions are opened with an account, one API key at a provider, instead of by provider name.

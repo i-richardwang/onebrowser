@@ -53,6 +53,11 @@ export class OneBrowser {
     return this.#ledger;
   }
 
+  /** The ledger's own id, kept for the ledger's life: it tells its record from another ledger's */
+  get ledgerId() {
+    return this.#store.id;
+  }
+
   /** Names of the providers it has adapters for */
   get providers() {
     return [...this.#providers];
@@ -91,6 +96,16 @@ export class OneBrowser {
    */
   usage({ since }) {
     return this.#store.usage(since);
+  }
+
+  /**
+   * The ledger's sessions opened since `since` (ms), oldest first, each as recorded:
+   * [{ provider, account, id, client, openedAt, endsBy, closedAt, durationMs, proxyBytes, syncedAt }], times in
+   * ms (closedAt, syncedAt null until then; durationMs and proxyBytes null without the provider's record). account:
+   * the provider's name alone for a session whose account is not known.
+   */
+  sessions({ since }) {
+    return this.#store.sessions(since);
   }
 
   /** Closes every session still open and the ledger */

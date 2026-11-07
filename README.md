@@ -45,6 +45,8 @@ Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbro
 | `accounts(provider?)` | The accounts with an API key, in the providers' order and then the keys': all of them, or the provider's (throws for an unknown provider) |
 | `syncUsage()` | Stores the providers' records (duration, proxy traffic) of ended sessions: `{ reported, failed: [{ account, error }] }` |
 | `usage({ since })` | Sessions opened since `since` (ms) per UTC day, account and client: `sessions`, `minutes` (the provider's record, else the open-to-close timing), `untimed`, `unsynced`, `proxyBytes` |
+| `sessions({ since })` | The ledger's sessions opened since `since` (ms), oldest first, each as recorded: `provider`, `account`, `id`, `client`, `openedAt`, `endsBy`, `closedAt`, `durationMs`, `proxyBytes`, `syncedAt` (times in ms; `closedAt` and `syncedAt` null until then, `durationMs` and `proxyBytes` null without the provider's record) |
+| `ledgerId` | The ledger's own id, kept for its life: a program that copies the ledger's record elsewhere tells it from another ledger's by it |
 | `close()` | Closes the sessions still open and the ledger |
 
 An account has `id` (`steel#3f9a1c`: the provider's name and the key's fingerprint), `provider`, `fingerprint`, and:
@@ -112,7 +114,7 @@ An account is known by its `id`, the provider's name and the first 6 hex digits 
 
 ### The ledger
 
-One SQLite file per machine by default: `$ONEBROWSER_DB`, else `onebrowser/sessions.db` in `$XDG_DATA_HOME` (default `~/.local/share`), shared by every program on the machine under its own `client`. A session is recorded when its provider has created it (it is billed from then on), with its account and when it ends at the latest; closed when its provider has released it; and completed with the provider's own record by `syncUsage()`. A ledger made by an earlier onebrowser is brought up to date when opened; one made by a later onebrowser is refused. Sessions recorded by onebrowser 0.5 or earlier have no account: they become the provider's only account's when it has one here, and stay without one while it has several.
+One SQLite file per machine by default: `$ONEBROWSER_DB`, else `onebrowser/sessions.db` in `$XDG_DATA_HOME` (default `~/.local/share`), shared by every program on the machine under its own `client`. A session is recorded when its provider has created it (it is billed from then on), with its account and when it ends at the latest; closed when its provider has released it; and completed with the provider's own record by `syncUsage()`. Nothing removes a session from the ledger, so its record is whole from the ledger's first session on. Each ledger has an id of its own (`ledgerId`), given when it is made (or first opened by onebrowser 0.7 or later) and kept for its life. A ledger made by an earlier onebrowser is brought up to date when opened; one made by a later onebrowser is refused. Sessions recorded by onebrowser 0.5 or earlier have no account: they become the provider's only account's when it has one here, and stay without one while it has several.
 
 ## Command line
 
@@ -125,7 +127,7 @@ npx onebrowser usage --days 7        # the ledger's sessions per UTC day, accoun
 npx onebrowser usage --json --env-file .env
 ```
 
-`usage` first fetches the providers' records of the sessions that have ended, as `syncUsage()` does. With `--json`, `quota` prints an array of what `readQuota()` returns, with the account: `{ account, provider, remaining, unbilled, unit, renewsAt }`, or `{ account, provider, error }` for a failed reading; `usage` prints `{ ledger, since, sessions, failed }`, where `sessions` is what `usage()` returns and `failed` what `syncUsage()` could not fetch. API keys are read as by the library, from the environment (`--env-file PATH` loads a file into it first). Exit status: 0 done, 1 a reading failed, 2 the command line is wrong.
+`usage` first fetches the providers' records of the sessions that have ended, as `syncUsage()` does. With `--json`, `quota` prints an array of what `readQuota()` returns, with the account: `{ account, provider, remaining, unbilled, unit, renewsAt }`, or `{ account, provider, error }` for a failed reading; `usage` prints `{ ledger, ledgerId, since, sessions, failed }`, where `sessions` is what `usage()` returns and `failed` what `syncUsage()` could not fetch. API keys are read as by the library, from the environment (`--env-file PATH` loads a file into it first). Exit status: 0 done, 1 a reading failed, 2 the command line is wrong.
 
 ## Adding a provider
 

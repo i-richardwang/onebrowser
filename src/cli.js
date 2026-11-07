@@ -63,7 +63,7 @@ const COMMANDS = {
       const { failed } = await browsers.syncUsage();
       for (const f of failed) err.write(`${f.account}: the provider's records were not fetched (${f.error})\n`);
       const sessions = browsers.usage({ since });
-      if (json) out.write(`${JSON.stringify({ ledger: browsers.ledgerPath, since: day(since), sessions, failed }, null, 2)}\n`);
+      if (json) out.write(`${JSON.stringify({ ledger: browsers.ledgerPath, ledgerId: browsers.ledgerId, since: day(since), sessions, failed }, null, 2)}\n`);
       else {
         out.write(`sessions since ${day(since)} in ${browsers.ledgerPath}:\n`);
         if (!sessions.length) out.write('  none\n');

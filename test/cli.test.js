@@ -88,6 +88,7 @@ test("usage fetches the providers' records first, then reports per day, account 
   assert.equal(json.status, 0);
   const report = JSON.parse(json.out);
   assert.equal(report.since, today);
+  assert.match(report.ledgerId, /^[0-9a-f-]{36}$/);
   assert.deepEqual(report.sessions, [{ day: today, provider: 'fake', account: id('fake'), client: 'test', sessions: 1, minutes: 1.5, untimed: 0, unsynced: 0, proxyBytes: 2e6 }]);
   assert.deepEqual(report.failed, []);
 });
