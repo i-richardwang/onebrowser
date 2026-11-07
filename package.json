@@ -1,7 +1,7 @@
 {
   "name": "onebrowser",
-  "version": "0.5.0",
-  "description": "One interface to remote browser providers: sessions by provider name, a usage ledger, account quotas",
+  "version": "0.6.0",
+  "description": "One interface to remote browser providers: sessions by account (an API key at a provider), a usage ledger, account quotas",
   "keywords": ["browser", "remote-browser", "cdp", "playwright", "steel", "hyperbrowser", "lightpanda", "kernel", "tinyfish", "anchorbrowser", "firecrawl"],
   "license": "MIT",
   "author": "Richard Wang",

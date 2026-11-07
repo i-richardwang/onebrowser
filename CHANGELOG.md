@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+Breaking: sessions are opened with an account, one API key at a provider, instead of by provider name.
+
+- `accounts(provider?)` lists the accounts with an API key; an account has `openSession(options)`, `readQuota({ maxAgeMs })`, `quota()` and `maxSessionCost(options)`, each for its own key. `checkReady()` and the provider-named methods of `OneBrowser` are gone.
+- Several keys for one provider: `apiKeys` in its settings, or `<PROVIDER>_API_KEY` holding them separated by commas, spaces or line breaks, or one per line in the file `<PROVIDER>_API_KEY_FILE` names.
+- An account's id is the provider's name and the key's fingerprint (`steel#3f9a1c`); a session has `account`. The ledger records each session's account, and `usage()` and `syncUsage()` report per account. Sessions recorded by earlier versions become the provider's only account's when it has one.
+- The command line reads and reports per account; `quota` takes providers or account ids.
+
 ## 0.5.0
 
 Breaking: `quota()` is synchronous and no longer reads the provider; a session's `closedAt` is when its provider released it.

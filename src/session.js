@@ -5,11 +5,12 @@ export const KEEP_ALIVE_MS = 15_000;
 const firstLine = (e) => String(e.message).split('\n')[0];
 
 /**
- * A remote browser session (OneBrowser.openSession), used over CDP: cdpUrl with any client (it may carry the API
+ * A remote browser session (Account.openSession), used over CDP: cdpUrl with any client (it may carry the API
  * key: never log it), or connect() / newPage() with Playwright. This process closes it maxDurationMs after it was
  * opened; one whose process died is ended by its provider idleTimeoutSec (at least its minIdleTimeoutSec) after
  * its client left.
- * openedAt: when it was asked for; closedAt: when its provider released it, null until then.
+ * account: the Account it is billed to; openedAt: when it was asked for; closedAt: when its provider released
+ * it, null until then.
  */
 export class Session {
   #release;
@@ -18,9 +19,9 @@ export class Session {
   #keepAlive = null;
   #deadline;
 
-  /** release(session) → closedAt: releases it at its provider and records it closed (OneBrowser) */
-  constructor({ provider, remote, openedAt, maxDurationMs, release }) {
-    this.provider = provider;
+  /** release(session) → closedAt: releases it at its provider and records it closed (Account) */
+  constructor({ account, remote, openedAt, maxDurationMs, release }) {
+    this.account = account;
     this.id = remote.id;
     this.egress = remote.egress;
     this.cdpUrl = remote.cdpUrl;
@@ -33,7 +34,7 @@ export class Session {
 
   /** Playwright's Browser over this session's CDP connection, made once; a keep-alive runs while it is connected */
   connect() {
-    if (this.#closing) return Promise.reject(new Error(`${this.provider} session ${this.id} is closed`));
+    if (this.#closing) return Promise.reject(new Error(`${this.account.id} session ${this.id} is closed`));
     this.#browser ??= this.#connect();
     return this.#browser;
   }
@@ -44,11 +45,11 @@ export class Session {
     try {
       browser = await chromium.connectOverCDP(this.cdpUrl, { timeout: 60_000 });
     } catch (e) {
-      throw new Error(`failed to connect to the ${this.provider} browser: ${firstLine(e)}`);
+      throw new Error(`failed to connect to the ${this.account.provider} browser: ${firstLine(e)}`);
     }
     try {
       const cdp = await browser.newBrowserCDPSession();
-      if (this.#closing) throw new Error(`${this.provider} session ${this.id} is closed`);
+      if (this.#closing) throw new Error(`${this.account.id} session ${this.id} is closed`);
       this.#keepAlive = setInterval(() => cdp.send('Browser.getVersion').catch(() => {}), KEEP_ALIVE_MS);
       this.#keepAlive.unref();
     } catch (e) {
