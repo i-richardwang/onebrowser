@@ -82,19 +82,21 @@ export class Account {
   }
 
   /**
-   * What is left of the quota now, in the provider's unit: { remaining, unbilled, unit, renewsAt }. The last
+   * What is left of the quota now, in the provider's unit: { remaining, unbilled, unit, renewsAt, total }. The last
    * reading shows the sessions that ended billingDelayMs before it; `unbilled` is what the ledger's others cost
    * at the provider's price, open ones as if they lasted as long as they can, and remaining the reading less
-   * that. renewsAt (ms): when the quota renews by itself; null: only a top-up renews it. Throws until the
-   * provider has been read, and while the last reading failed.
+   * that. renewsAt (ms): when the quota renews by itself; null: only a top-up renews it. total: what the quota
+   * holds when whole, the plan's or a free grant's, as the provider reports it or the adapter's plan facts give
+   * it, for showing how much of it is used; null when neither says. Throws until the provider has been read, and
+   * while the last reading failed.
    */
   quota() {
     const reading = this.#done;
     if (!reading) throw new Error(`the quota of ${this.id} has not been read yet (readQuota)`);
     if (reading.error) throw reading.error;
     const unbilled = this.#ledger().openSince(this.id, reading.billedBefore).reduce((cost, s) => cost + sessionCost(this.#settings.price, s.durationMs), 0);
-    const { remaining, unit, renewsAt = null } = reading.value;
-    return { remaining: remaining - unbilled, unbilled, unit, renewsAt };
+    const { remaining, unit, renewsAt, total } = reading.value;
+    return { remaining: remaining - unbilled, unbilled, unit, renewsAt, total };
   }
 
   /** The latest reading if it is in progress or at most maxAgeMs old, else a new one */
@@ -108,7 +110,7 @@ export class Account {
       try {
         const q = await this.#adapter.quota(this.#settings, this.#apiKey, this.#ledger().history(this.id, reading.billedBefore));
         if (!(Number.isFinite(q?.remaining) && typeof q.unit === 'string')) throw new Error(`${this.provider} answered no quota: ${JSON.stringify(q)}`);
-        reading.value = q;
+        reading.value = { remaining: q.remaining, unit: q.unit, renewsAt: q.renewsAt ?? null, total: Number.isFinite(q.total) && q.total > 0 ? q.total : null };
       } catch (e) {
         reading.error = e;
       }

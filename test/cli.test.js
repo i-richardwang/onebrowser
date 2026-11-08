@@ -46,12 +46,12 @@ async function cli(argv, browsers) {
 test('quota reads every account, named by provider or by id; a failed reading is shown and exits 1', async () => {
   const fakes = {
     a: adapter(),
-    b: adapter({ quota: async () => ({ remaining: 3, unit: 'hours', renewsAt: Date.UTC(2026, 11, 1) }) }),
+    b: adapter({ quota: async () => ({ remaining: 3, unit: 'hours', renewsAt: Date.UTC(2026, 11, 1), total: 10 }) }),
     c: adapter({ quota: async () => { throw new Error('HTTP 500'); } }),
   };
   const text = await cli(['quota', 'a', id('b')], browsersWith(fakes));
   assert.equal(text.status, 0);
-  assert.equal(text.out, `${id('a').padEnd(21)} 12.35 USD left\n${id('b').padEnd(21)} 3 hours left, renews 2026-12-01\n`);
+  assert.equal(text.out, `${id('a').padEnd(21)} 12.35 USD left\n${id('b').padEnd(21)} 3 of 10 hours left, renews 2026-12-01\n`);
 
   const two = new OneBrowser({ client: 'test', ledgerPath: ':memory:', adapters: { a: fakes.a }, providers: { a: { apiKeys: ['key', 'other'] } } });
   await two.accounts('a')[0].openSession(); // 16 minutes at most, at $0.01 a minute
@@ -60,8 +60,8 @@ test('quota reads every account, named by provider or by id; a failed reading is
   const json = await cli(['quota', '--json'], browsersWith(fakes));
   assert.equal(json.status, 1);
   assert.deepEqual(JSON.parse(json.out), [
-    { account: id('a'), provider: 'a', remaining: 12.345, unbilled: 0, unit: 'USD', renewsAt: null },
-    { account: id('b'), provider: 'b', remaining: 3, unbilled: 0, unit: 'hours', renewsAt: Date.UTC(2026, 11, 1) },
+    { account: id('a'), provider: 'a', remaining: 12.345, unbilled: 0, unit: 'USD', renewsAt: null, total: null },
+    { account: id('b'), provider: 'b', remaining: 3, unbilled: 0, unit: 'hours', renewsAt: Date.UTC(2026, 11, 1), total: 10 },
     { account: id('c'), provider: 'c', error: 'HTTP 500' },
   ]);
 });
@@ -91,6 +91,24 @@ test("usage fetches the providers' records first, then reports per day, account 
   assert.match(report.ledgerId, /^[0-9a-f-]{36}$/);
   assert.deepEqual(report.sessions, [{ day: today, provider: 'fake', account: id('fake'), client: 'test', sessions: 1, minutes: 1.5, untimed: 0, unsynced: 0, proxyBytes: 2e6 }]);
   assert.deepEqual(report.failed, []);
+});
+
+test('--env-file adds its variables under those set in the environment, leaving the environment as it is', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-env-'));
+  const envFile = path.join(dir, '.env');
+  fs.writeFileSync(envFile, `ONEBROWSER_DB=${path.join(dir, 'file.db')}\n`);
+  const ledgerAfter = async () => JSON.parse((await cli(['usage', '--json', '--env-file', envFile])).out).ledger;
+  try {
+    assert.equal(await ledgerAfter(), path.join(dir, 'file.db'));
+    assert.equal(process.env.ONEBROWSER_DB, undefined);
+    process.env.ONEBROWSER_DB = ''; // unset
+    assert.equal(await ledgerAfter(), path.join(dir, 'file.db'));
+    process.env.ONEBROWSER_DB = path.join(dir, 'shell.db');
+    assert.equal(await ledgerAfter(), path.join(dir, 'shell.db'));
+  } finally {
+    delete process.env.ONEBROWSER_DB;
+    fs.rmSync(dir, { recursive: true });
+  }
 });
 
 test('usage as text, with totals for an account with several rows; an account whose records cannot be fetched is reported and exits 1', async () => {

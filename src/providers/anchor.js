@@ -12,6 +12,7 @@ import { json } from './http.js';
  */
 export const defaults = {
   apiBase: 'https://api.anchorbrowser.io/v1',
+  includedQuota: 5, // credits the free plan includes each month (docs.anchorbrowser.io/pricing, 2026-11)
   // credits ($1 each): $0.01 a browser and, by its docs, $0.05 an hour by the minute; the sessions' own records
   // (credits_used) bill more, about $0.06 an hour and a step of $0.003 in the second minute, which this covers
   price: { perSession: 0.01, perHour: 0.15, stepSec: 60 },
@@ -45,7 +46,7 @@ export async function releaseSession(settings, apiKey, session) {
 /** The account's credits left, gifted ones included. Unlike the other endpoints, /billing answers without a `data` wrapper */
 export async function quota(settings, apiKey) {
   const { credits } = await json(`${settings.apiBase}/billing`, { headers: headers(apiKey) });
-  return { remaining: credits, unit: 'credits' };
+  return { remaining: credits, unit: 'credits', total: settings.includedQuota };
 }
 
 /** Usage of the sessions among `sessions` that have ended, fetched by id: duration in whole seconds */

@@ -1,10 +1,13 @@
 import { Account } from './account.js';
 import { readApiKeys } from './credentials.js';
 import { QuotaError } from './errors.js';
-import { defaultLedgerPath, Ledger } from './ledger.js';
+import { Ledger } from './ledger.js';
+import { ledgerPathIn } from './ledger-path.js';
 import { ADAPTERS, checkAdapter, fullSettings } from './providers/index.js';
+import { readVariables } from './variables.js';
 
 export { apiKeyEnv } from './credentials.js';
+export { defaultLedgerPath, LEDGER_PATH_VARIABLES } from './ledger-path.js';
 export { sessionOptions } from './options.js';
 export { QuotaError };
 
@@ -15,19 +18,22 @@ export { QuotaError };
  * what its quota has left at any moment, are known. Which account to use, and when to stop using one, are the
  * caller's decisions.
  *
- * client: the program using it, recorded with each session; ledgerPath: the ledger's SQLite file, opened when
- * first needed; providers: settings per provider name on top of its adapter's defaults, apiKeys among them
- * (else credentials.js); adapters: further or replacement adapters by provider name.
+ * client: the program using it, recorded with each session; env, envFile: the variables it reads the API keys
+ * and the ledger's place from (variables.js), the process's environment by default, over those of an env file
+ * if one is named; ledgerPath: the ledger's SQLite file, opened when first needed; providers: settings per
+ * provider name on top of its adapter's defaults, apiKeys among them; adapters: further or replacement adapters
+ * by provider name.
  */
 export class OneBrowser {
   #providers = []; // names, in the adapters' order
   #accounts = [];
   #ledger = null;
 
-  constructor({ client, ledgerPath = defaultLedgerPath(), providers = {}, adapters = {} }) {
+  constructor({ client, env = process.env, envFile, ledgerPath, providers = {}, adapters = {} }) {
     if (!client?.trim()) throw new Error('onebrowser: client must name the program using it');
+    const variables = readVariables(env, envFile);
     this.client = client;
-    this.ledgerPath = ledgerPath;
+    this.ledgerPath = ledgerPath ?? ledgerPathIn(variables);
     const all = { ...ADAPTERS, ...adapters };
     const unknown = Object.keys(providers).filter((name) => !all[name]);
     if (unknown.length) throw new Error(`onebrowser: no adapter for provider ${unknown.join(', ')}`);
@@ -36,7 +42,7 @@ export class OneBrowser {
       const { apiKeys, ...given } = providers[provider] ?? {};
       const settings = fullSettings(provider, { ...adapter.defaults, ...given });
       this.#providers.push(provider);
-      for (const apiKey of readApiKeys(provider, apiKeys)) {
+      for (const apiKey of readApiKeys(provider, apiKeys, variables)) {
         this.#accounts.push(new Account({ provider, adapter, settings, apiKey, client, ledger: () => this.#store }));
       }
     }

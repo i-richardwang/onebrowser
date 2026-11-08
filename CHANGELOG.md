@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- `quota()` has `total`: what the quota holds when whole, for showing how much of it is used. Firecrawl reports its plan's credits; Kernel and Lightpanda hold `monthlyHours`; Steel, TinyFish, Hyperbrowser and Anchor take `includedQuota`, a new plan fact set to what their free plan or a new account's grant gives (as of 2026-11), which a program on another plan sets. `null` when neither the provider nor the settings say. The command line prints it (`3 of 10 hours left`).
+- `env` and `envFile`: the variables a `OneBrowser` reads its API keys and its ledger's place from, `process.env` by default, over those of an env file if one is named (a variable set but empty is unset). A program that keeps the keys in a file hands it over here, without loading it into its environment, where its child processes would see them. `--env-file` reads its file this way, and no longer changes the environment.
+- `onebrowser/ledger-path`: `defaultLedgerPath({ env, envFile })` and `LEDGER_PATH_VARIABLES`, for a program that looks for the ledger without opening it; it loads no SQLite. Both are exported from `onebrowser` too.
+- The ledger's place takes `~` for the home directory, as an env file holds it unexpanded, and ignores a relative `XDG_DATA_HOME`, as the XDG spec has it.
+
 ## 0.7.0
 
 - `sessions({ since })`: the ledger's sessions one by one, as recorded, for a program that keeps its own record of them (such as a usage dashboard's collector).

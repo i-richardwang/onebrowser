@@ -1,19 +1,7 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-
-/**
- * Where the ledger lives unless a path is given: $ONEBROWSER_DB, else onebrowser/sessions.db in the user's data
- * directory ($XDG_DATA_HOME, default ~/.local/share). One ledger per machine is shared by every project on it, so
- * that the record of an account's sessions is whole, whichever project opened them.
- */
-export function defaultLedgerPath() {
-  if (process.env.ONEBROWSER_DB) return process.env.ONEBROWSER_DB;
-  const data = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-  return path.join(data, 'onebrowser', 'sessions.db');
-}
 
 /** Every remote browser session, from when its provider has created it: it is billed from then on, even if connecting fails */
 const SCHEMA = `

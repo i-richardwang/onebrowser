@@ -8,6 +8,7 @@ import { json } from './http.js';
 export const defaults = {
   apiBase: 'https://api.steel.dev/v1',
   connectBase: 'wss://connect.steel.dev',
+  includedQuota: 30, // USD: the Launch plan's one-time credits, valid for 90 days (steel.dev/pricing, 2026-11)
   price: { perHour: 0.1, stepSec: 60 }, // USD on the Launch plan, by the minute rounded up
   billingDelayMs: 5 * 60_000, // seen within 11 s
 };
@@ -32,7 +33,7 @@ export async function releaseSession(settings, apiKey, session) {
 /** The account's balance in USD, as Steel's dashboard reads it (the endpoint is not in Steel's API docs) */
 export async function quota(settings, apiKey) {
   const { balanceCents } = await json(`${settings.apiBase}/credits/balance`, { headers: headers(apiKey) });
-  return { remaining: balanceCents / 100, unit: 'USD' };
+  return { remaining: balanceCents / 100, unit: 'USD', total: settings.includedQuota };
 }
 
 /** Usage of the sessions among `sessions` that have ended, fetched by id: the session list cannot be filtered by time */

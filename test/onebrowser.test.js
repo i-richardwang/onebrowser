@@ -1,6 +1,7 @@
 // Offline tests of onebrowser: fake adapters and fetch, no network, no browser.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -85,30 +86,73 @@ test('a OneBrowser names its client; settings and adapters must be for known pro
   assert.throws(() => b.accounts('nope'), /unknown provider nope/);
 });
 
-test('an account per API key: from the settings, else the environment, else <env>_FILE, each key once, in the providers\' order', () => {
+test('an account per API key: from the settings, else the env\'s variable, else the file its _FILE twin names, each key once, in the providers\' order', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-key-'));
-  const steelAccounts = () => new OneBrowser({ client: 'x', ledgerPath: ':memory:' }).accounts('steel').map((a) => [a.id, a.provider, a.fingerprint]);
+  const steelAccounts = (env, providers) => new OneBrowser({ client: 'x', ledgerPath: ':memory:', env, providers }).accounts('steel').map((a) => [a.id, a.provider, a.fingerprint]);
   const as = (...keys) => keys.map((k) => [accountId('steel', k), 'steel', fingerprint(k)]);
   try {
     assert.equal(apiKeyEnv('steel'), 'STEEL_API_KEY');
     assert.match(fingerprint('k0'), /^[0-9a-f]{6}$/);
     assert.notEqual(fingerprint('k0'), fingerprint('k1'));
-    const given = new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { steel: { apiKeys: ['k0', 'k0'] }, tinyfish: { apiKeys: ['t'] } } });
+    const given = new OneBrowser({ client: 'x', ledgerPath: ':memory:', env: {}, providers: { steel: { apiKeys: ['k0', 'k0'] }, tinyfish: { apiKeys: ['t'] } } });
     assert.deepEqual(given.accounts().map((a) => a.id), [accountId('tinyfish', 't'), accountId('steel', 'k0')]);
-    process.env.STEEL_API_KEY = ' k1, k2\nk1 ';
-    assert.deepEqual(steelAccounts(), as('k1', 'k2'));
-    assert.deepEqual(given.accounts('steel').map((a) => a.id), [accountId('steel', 'k0')]); // the settings win over the environment
+    assert.deepEqual(steelAccounts({ STEEL_API_KEY: ' k1, k2\nk1 ' }), as('k1', 'k2'));
+    assert.deepEqual(steelAccounts({ STEEL_API_KEY: 'k1' }, { steel: { apiKeys: ['k0'] } }), as('k0')); // the settings win over the env
 
     fs.writeFileSync(path.join(dir, 'steel'), 'k3\nk4\n');
-    process.env.STEEL_API_KEY = ''; // an empty value (`STEEL_API_KEY=` in .env) is unset
-    process.env.STEEL_API_KEY_FILE = path.join(dir, 'steel');
-    assert.deepEqual(steelAccounts(), as('k3', 'k4'));
-    process.env.STEEL_API_KEY_FILE = path.join(dir, 'gone');
-    assert.throws(steelAccounts, /STEEL_API_KEY_FILE names no file/);
+    // an empty value (`STEEL_API_KEY=` in .env) is unset
+    assert.deepEqual(steelAccounts({ STEEL_API_KEY: '', STEEL_API_KEY_FILE: path.join(dir, 'steel') }), as('k3', 'k4'));
+    assert.throws(() => steelAccounts({ STEEL_API_KEY_FILE: path.join(dir, 'gone') }), /STEEL_API_KEY_FILE names no file/);
+
+    // The process's environment unless an env is given
+    process.env.STEEL_API_KEY = 'k5';
+    assert.deepEqual(steelAccounts(), as('k5'));
+    assert.deepEqual(steelAccounts({}), []);
   } finally {
     fs.rmSync(dir, { recursive: true });
     delete process.env.STEEL_API_KEY;
-    delete process.env.STEEL_API_KEY_FILE;
+  }
+});
+
+test('an env file\'s variables count under those set in env, an empty one hiding none, and stay out of the environment', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-env-'));
+  const envFile = path.join(dir, 'keys.env');
+  fs.writeFileSync(envFile, 'STEEL_API_KEY=file\nTINYFISH_API_KEY=file\nKERNEL_API_KEY=file\nONEBROWSER_DB=/data/file.db\n');
+  try {
+    const b = new OneBrowser({ client: 'x', env: { STEEL_API_KEY: 'shell', TINYFISH_API_KEY: '' }, envFile });
+    assert.deepEqual(b.accounts().map((a) => a.id), [accountId('tinyfish', 'file'), accountId('steel', 'shell'), accountId('kernel', 'file')]);
+    assert.equal(b.ledgerPath, '/data/file.db');
+    assert.equal(process.env.KERNEL_API_KEY, undefined);
+    assert.throws(() => new OneBrowser({ client: 'x', envFile: path.join(dir, 'gone.env') }), /cannot read the env file .*gone\.env/);
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('the ledger is ONEBROWSER_DB, else onebrowser/sessions.db in XDG_DATA_HOME unless relative, else in ~/.local/share, ~ the home directory', () => {
+  const ledgerOf = (env) => new OneBrowser({ client: 'x', env }).ledgerPath;
+  const home = os.homedir();
+  assert.equal(ledgerOf({ ONEBROWSER_DB: '/data/b.db', XDG_DATA_HOME: '/xdg' }), '/data/b.db');
+  assert.equal(ledgerOf({ ONEBROWSER_DB: '~/b.db' }), path.join(home, 'b.db'));
+  assert.equal(ledgerOf({ XDG_DATA_HOME: '/xdg' }), path.join('/xdg', 'onebrowser', 'sessions.db'));
+  assert.equal(ledgerOf({ XDG_DATA_HOME: '~/data' }), path.join(home, 'data', 'onebrowser', 'sessions.db'));
+  assert.equal(ledgerOf({ XDG_DATA_HOME: 'data' }), path.join(home, '.local', 'share', 'onebrowser', 'sessions.db'));
+  assert.equal(ledgerOf({}), path.join(home, '.local', 'share', 'onebrowser', 'sessions.db'));
+});
+
+test('onebrowser/ledger-path places the ledger as a OneBrowser does, its env file included, without loading SQLite', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-path-'));
+  const envFile = path.join(dir, 'keys.env');
+  fs.writeFileSync(envFile, 'ONEBROWSER_DB=/data/file.db\n');
+  try {
+    const { defaultLedgerPath, LEDGER_PATH_VARIABLES } = await import('onebrowser/ledger-path');
+    assert.deepEqual(LEDGER_PATH_VARIABLES, ['ONEBROWSER_DB', 'XDG_DATA_HOME']);
+    assert.equal(defaultLedgerPath({ env: {}, envFile }), '/data/file.db');
+    assert.equal(defaultLedgerPath({ env: { ONEBROWSER_DB: '/data/shell.db' }, envFile }), new OneBrowser({ client: 'x', env: { ONEBROWSER_DB: '/data/shell.db' }, envFile }).ledgerPath);
+    const sqliteAfter = (entry) => String(execFileSync(process.execPath, ['--input-type=module', '-e', `await import('${entry}'); console.log(process.moduleLoadList.some((m) => m.endsWith(' sqlite')))`])).trim();
+    assert.deepEqual([sqliteAfter('onebrowser/ledger-path'), sqliteAfter('onebrowser')], ['false', 'true']);
+  } finally {
+    fs.rmSync(dir, { recursive: true });
   }
 });
 
@@ -214,13 +258,14 @@ test('programs sharing a ledger count each other\'s sessions at once', async () 
 
 // ---------------- quota and usage ----------------
 
-test('a quota reading renews only on a top-up unless the provider says when; one without a number left is a failed reading', async () => {
+test('a quota reading renews only on a top-up unless the provider says when, and is whole at the total it gives, if a positive one; one without a number left is a failed reading', async () => {
   const b = browsersWith(fakeAdapter(), {
-    adapters: { monthly: fakeAdapter({ quota: async () => ({ remaining: 3, unit: 'hours', renewsAt: 42 }) }), changed: fakeAdapter({ quota: async () => ({ remaining: Number(undefined), unit: 'USD' }) }) },
-    providers: { monthly: { apiKeys: ['k'] }, changed: { apiKeys: ['k'] } },
+    adapters: { monthly: fakeAdapter({ quota: async () => ({ remaining: 3, unit: 'hours', renewsAt: 42, total: 10 }) }), unsized: fakeAdapter({ quota: async () => ({ remaining: 3, unit: 'USD', total: 0 }) }), changed: fakeAdapter({ quota: async () => ({ remaining: Number(undefined), unit: 'USD' }) }) },
+    providers: { monthly: { apiKeys: ['k'] }, unsized: { apiKeys: ['k'] }, changed: { apiKeys: ['k'] } },
   });
-  assert.deepEqual(await account(b).readQuota(), { remaining: 5, unbilled: 0, unit: 'USD', renewsAt: null });
-  assert.deepEqual(await account(b, 'monthly').readQuota(), { remaining: 3, unbilled: 0, unit: 'hours', renewsAt: 42 });
+  assert.deepEqual(await account(b).readQuota(), { remaining: 5, unbilled: 0, unit: 'USD', renewsAt: null, total: null });
+  assert.deepEqual(await account(b, 'monthly').readQuota(), { remaining: 3, unbilled: 0, unit: 'hours', renewsAt: 42, total: 10 });
+  assert.equal((await account(b, 'unsized').readQuota()).total, null);
   await assert.rejects(account(b, 'changed').readQuota(), /changed answered no quota/); // a changed response shape
   await b.close();
 });
@@ -235,14 +280,14 @@ test('quota is the reading less what the sessions it may not show yet cost: open
   assert.equal(a.maxSessionCost({ maxDurationMs: 90_000, idleTimeoutSec: 30 }), 2);
   const anchorAccount = account(new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { anchor: { apiKeys: ['k'] } } }), 'anchor');
   assert.equal(anchorAccount.maxSessionCost({ maxDurationMs: 30_000, idleTimeoutSec: 30 }), 0.015); // its idle timeout is a minute at least: 2 minutes
-  assert.deepEqual(await a.readQuota(), { remaining: 84, unbilled: 16, unit: 'credits', renewsAt: null });
+  assert.deepEqual(await a.readQuota(), { remaining: 84, unbilled: 16, unit: 'credits', renewsAt: null, total: null });
   t.mock.timers.setTime(start + 90_000);
   await s.close(); // lasted 1.5 min: 2 credits
   assert.equal((await a.readQuota()).unbilled, 2);
   t.mock.timers.setTime(start + 150_000); // a reading a minute after the session ended may not show it yet
   assert.equal((await a.readQuota()).unbilled, 2);
   t.mock.timers.setTime(start + 150_001);
-  assert.deepEqual(await a.readQuota(), { remaining: 100, unbilled: 0, unit: 'credits', renewsAt: null });
+  assert.deepEqual(await a.readQuota(), { remaining: 100, unbilled: 0, unit: 'credits', renewsAt: null, total: null });
   await b.close();
 });
 
@@ -335,7 +380,8 @@ test('a ledger of onebrowser 0.3 is brought up to date when opened: its sessions
   }
 });
 
-test('sessions() lists the ledger\'s sessions as recorded, oldest first, with the provider\'s record once synced; ledgerId is the ledger\'s for life', async () => {
+test('sessions() lists the ledger\'s sessions as recorded, oldest first, with the provider\'s record once synced; ledgerId is the ledger\'s for life', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 10, 6, 12) });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onebrowser-ledger-'));
   const ledgerPath = path.join(dir, 'sessions.db');
   const a = fakeAdapter({ sessionUsage: async (settings, apiKey, rows) => rows.filter((r) => r.closedAt).map((r) => ({ id: r.id, durationMs: 90_000, proxyBytes: 2e6 })) });
@@ -344,6 +390,7 @@ test('sessions() lists the ledger\'s sessions as recorded, oldest first, with th
     const before = Date.now();
     const first = await account(b).openSession();
     await first.close();
+    t.mock.timers.tick(60_000);
     const open = await account(b).openSession();
     const ledgerId = b.ledgerId;
     assert.match(ledgerId, /^[0-9a-f-]{36}$/);
@@ -454,7 +501,7 @@ test('Lightpanda quota is the monthly hours less the ledger\'s session time of t
   const month = utcMonth();
   const asked = [];
   const history = { endedSessionMsSince: (since) => (asked.push(since), 1.5 * 3_600_000) };
-  assert.deepEqual(await lightpanda.quota(lightpanda.defaults, 'tok', history), { remaining: lightpanda.defaults.monthlyHours - 1.5, unit: 'hours', renewsAt: month.next });
+  assert.deepEqual(await lightpanda.quota(lightpanda.defaults, 'tok', history), { remaining: lightpanda.defaults.monthlyHours - 1.5, unit: 'hours', renewsAt: month.next, total: lightpanda.defaults.monthlyHours });
   assert.deepEqual(asked, [month.start]);
 
   const start = Date.UTC(2026, 10, 6, 12);
@@ -520,7 +567,7 @@ test("Kernel quota is the monthly hours less the uptime of this month's sessions
     (url) => ({ body: pages[Number(new URL(url).searchParams.get('offset')) / 100], headers: { 'X-Has-More': 'true' } }),
     () => kernel.quota(kernel.defaults, 'key'),
   );
-  assert.deepEqual(q, { remaining: kernel.defaults.monthlyHours - 2, unit: 'hours', renewsAt: month.next });
+  assert.deepEqual(q, { remaining: kernel.defaults.monthlyHours - 2, unit: 'hours', renewsAt: month.next, total: kernel.defaults.monthlyHours });
   assert.deepEqual(requests.map((r) => new URL(r.url).search), ['?status=all&limit=100&offset=0', '?status=all&limit=100&offset=100', '?status=all&limit=100&offset=200']);
 });
 
@@ -551,7 +598,7 @@ test('an Anchor session takes the idle timeout rounded down to whole minutes, at
   assert.deepEqual(usage, [{ id: 'done', durationMs: 126_000, proxyBytes: 2048 }]);
 
   const { value: q } = await withFetch(() => ({ body: { credits: 4.97, credits_used: 0.03, tier: 'monthly_free' } }), () => anchor.quota(settings, 'key'));
-  assert.deepEqual(q, { remaining: 4.97, unit: 'credits' });
+  assert.deepEqual(q, { remaining: 4.97, unit: 'credits', total: anchor.defaults.includedQuota });
 });
 
 test('a Firecrawl session takes its timeouts in whole seconds, ttl from 30 s to 1 h, without live view or ad blocking, and is deleted; 402 is out of credits; ended sessions report their usage', async () => {
@@ -584,7 +631,7 @@ test('a Firecrawl session takes its timeouts in whole seconds, ttl from 30 s to 
 
   const period = { remainingCredits: 1380, planCredits: 1000, billingPeriodStart: '2026-11-03T02:32:29.174Z', billingPeriodEnd: '2026-12-03T02:32:29.174Z' };
   const { value: q } = await withFetch(() => ({ body: { success: true, data: period } }), () => firecrawl.quota(settings, 'key'));
-  assert.deepEqual(q, { remaining: 1380, unit: 'credits', renewsAt: Date.parse(period.billingPeriodEnd) });
+  assert.deepEqual(q, { remaining: 1380, unit: 'credits', renewsAt: Date.parse(period.billingPeriodEnd), total: 1000 });
   const { value: unrenewed } = await withFetch(() => ({ body: { success: true, data: { ...period, billingPeriodEnd: null } } }), () => firecrawl.quota(settings, 'key'));
   assert.equal(unrenewed.renewsAt, null);
 });

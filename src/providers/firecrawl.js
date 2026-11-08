@@ -44,10 +44,13 @@ export async function releaseSession(settings, apiKey, session) {
   await json(`${settings.apiBase}/interact/${session.id}`, { method: 'DELETE', headers: headers(apiKey) });
 }
 
-/** The team's credits left, coupon credits included; the plan's credits renew at the end of its billing period */
+/**
+ * The team's credits left, coupon credits included; the plan's credits (planCredits, without coupon or
+ * pay-as-you-go ones) renew at the end of its billing period
+ */
 export async function quota(settings, apiKey) {
   const { data } = await json(`${settings.apiBase}/team/credit-usage`, { headers: headers(apiKey) });
-  return { remaining: data.remainingCredits, unit: 'credits', renewsAt: data.billingPeriodEnd ? Date.parse(data.billingPeriodEnd) : null };
+  return { remaining: data.remainingCredits, unit: 'credits', renewsAt: data.billingPeriodEnd ? Date.parse(data.billingPeriodEnd) : null, total: data.planCredits };
 }
 
 /** Usage of the sessions among `sessions` that have ended, fetched by id: the session list has no durations (GET /interact/{id} is not in Firecrawl's API docs) */

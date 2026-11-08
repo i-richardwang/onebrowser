@@ -9,6 +9,7 @@ import { json } from './http.js';
  */
 export const defaults = {
   apiBase: 'https://api.hyperbrowser.ai/api',
+  includedQuota: 5000, // credits a free account comes with, worth $5 (hyperbrowser.ai/pricing, 2026-11)
   price: { perHour: 100, stepSec: 60 }, // credits; its rounding is not documented
   billingDelayMs: 5 * 60_000, // billed while the session runs, seen within 10 s of its end
 };
@@ -30,7 +31,7 @@ export async function releaseSession(settings, apiKey, session) {
 /** The team's credits left (the endpoint of Hyperbrowser's SDK; it is not in Hyperbrowser's API docs) */
 export async function quota(settings, apiKey) {
   const { remaining } = await json(`${settings.apiBase}/team/credit-info`, { headers: headers(apiKey) });
-  return { remaining, unit: 'credits' };
+  return { remaining, unit: 'credits', total: settings.includedQuota };
 }
 
 /** Usage of the sessions among `sessions` that have ended (have an endTime), fetched by id. Times are epoch ms, as numbers or strings */

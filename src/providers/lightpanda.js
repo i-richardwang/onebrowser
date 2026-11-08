@@ -39,7 +39,7 @@ export async function releaseSession() {}
 export async function quota(settings, apiKey, history) {
   const month = utcMonth();
   const usedHours = history.endedSessionMsSince(month.start) / 3_600_000;
-  return { remaining: settings.monthlyHours - usedHours, unit: 'hours', renewsAt: month.next };
+  return { remaining: settings.monthlyHours - usedHours, unit: 'hours', renewsAt: month.next, total: settings.monthlyHours };
 }
 
 /**

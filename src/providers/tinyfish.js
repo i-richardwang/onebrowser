@@ -10,6 +10,7 @@ import { json } from './http.js';
 export const defaults = {
   apiBase: 'https://api.browser.tinyfish.ai',
   walletUrl: 'https://agent.tinyfish.ai/v1/wallet',
+  includedQuota: 8, // USD: what a new account's wallet starts with (tinyfish.ai/pricing, 2026-11)
   price: { perHour: 0.12, stepSec: 60 }, // USD: $0.002 a minute, proxy included; its rounding is not documented
   billingDelayMs: 5 * 60_000, // seen within 64 s
 };
@@ -36,7 +37,7 @@ export async function releaseSession(settings, apiKey, session) {
 /** The wallet's balance (https://docs.tinyfish.ai/wallet) */
 export async function quota(settings, apiKey) {
   const w = await json(settings.walletUrl, { headers: headers(apiKey) });
-  return { remaining: Number(w.available_balance), unit: w.currency };
+  return { remaining: Number(w.available_balance), unit: w.currency, total: settings.includedQuota };
 }
 
 /**

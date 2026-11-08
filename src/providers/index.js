@@ -13,14 +13,16 @@ import * as tinyfish from './tinyfish.js';
  *     price               what its sessions cost, in the unit of its quota (cost.js)
  *     billingDelayMs      how long after a session has ended its quota reading shows it, at the latest
  *     minIdleTimeoutSec   the shortest idle timeout it takes (default 0)
- *     and its own         API base URLs, plan facts such as monthlyHours
+ *     and its own         API base URLs, plan facts such as monthlyHours or includedQuota (what the plan, or
+ *                         the free grant, puts in the quota when the provider does not say)
  *   createSession(settings, apiKey, { proxyCountry, idleTimeoutSec, maxDurationMs }) → { id, cdpUrl, egress }
  *       throws QuotaError (errors.js) when the provider refuses the session for the account's quota
  *   releaseSession(settings, apiKey, session)
  *   sessionUsage(settings, apiKey, [{ id, openedAt, closedAt }]) → [{ id, durationMs, proxyBytes }]
  *       the provider's record of those that have ended, or the ledger's timing where its API key cannot read one
- *   quota(settings, apiKey, history) → { remaining, unit, renewsAt? }
- *       what the account has left in the provider's unit, and when it renews by itself (ms); history: the
+ *   quota(settings, apiKey, history) → { remaining, unit, renewsAt?, total? }
+ *       what the account has left in the provider's unit, when it renews by itself (ms), and what it holds when
+ *       whole, as the provider reports it or the plan facts give it; history: the
  *       ledger's sessions that the reading shows (Ledger.history), for a provider that cannot count its usage
  * Every function throws when it fails. Requests go through http.js, which throws HttpError for a status other
  * than 2xx.

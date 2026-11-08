@@ -46,7 +46,7 @@ const COMMANDS = {
       if (json) out.write(`${JSON.stringify(quotas, null, 2)}\n`);
       else {
         for (const q of quotas) {
-          const text = q.error ? `unknown (${q.error})` : `${round(q.remaining)} ${q.unit} left${q.unbilled ? ` (after ${round(q.unbilled)} not billed yet)` : ''}${q.renewsAt ? `, renews ${day(q.renewsAt)}` : ''}`;
+          const text = q.error ? `unknown (${q.error})` : `${round(q.remaining)}${q.total ? ` of ${round(q.total)}` : ''} ${q.unit} left${q.unbilled ? ` (after ${round(q.unbilled)} not billed yet)` : ''}${q.renewsAt ? `, renews ${day(q.renewsAt)}` : ''}`;
           out.write(`${q.account.padEnd(21)} ${text}\n`);
         }
       }
@@ -88,7 +88,7 @@ Usage:
 
 Options:
   --json             JSON on stdout instead of text
-  --env-file PATH    read environment variables (API keys) from PATH first
+  --env-file PATH    read the variables below from PATH too; those set in the environment win
   -h, --help
 
 Environment:
@@ -129,8 +129,7 @@ function parseCommandLine(argv) {
 export async function run(argv, { out = process.stdout, err = process.stderr, browsers } = {}) {
   try {
     const { command, values, args } = parseCommandLine(argv);
-    if (values['env-file']) process.loadEnvFile(values['env-file']);
-    browsers ??= new OneBrowser({ client: 'onebrowser' });
+    browsers ??= new OneBrowser({ client: 'onebrowser', envFile: values['env-file'] });
     if (values.help || !command) {
       (values.help ? out : err).write(help(browsers.providers));
       return values.help ? 0 : 2;

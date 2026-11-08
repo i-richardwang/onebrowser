@@ -11,16 +11,16 @@ export const fingerprint = (apiKey) => crypto.createHash('sha256').update(apiKey
 const split = (text) => text.split(/[\s,]+/).filter(Boolean);
 
 /**
- * A provider's API keys, one per account: `apiKeys` as given in its settings, else those in the environment
- * variable apiKeyEnv(provider), else those in the file named by that variable with _FILE appended, in their
+ * A provider's API keys, one per account: `apiKeys` as given in its settings, else those in the variable
+ * apiKeyEnv(provider) of `variables`, else those in the file named by that variable with _FILE appended, in their
  * order and each once. Separators: commas, spaces or line breaks. None is fine; the file must exist.
  */
-export function readApiKeys(provider, apiKeys) {
-  const env = apiKeyEnv(provider);
-  const file = process.env[`${env}_FILE`];
-  let keys = apiKeys ?? split(process.env[env] ?? '');
+export function readApiKeys(provider, apiKeys, variables) {
+  const name = apiKeyEnv(provider);
+  const file = variables[`${name}_FILE`];
+  let keys = apiKeys ?? split(variables[name] ?? '');
   if (!keys.length && file) {
-    if (!fs.existsSync(file)) throw new Error(`${provider} keys: ${env}_FILE names no file (${file})`);
+    if (!fs.existsSync(file)) throw new Error(`${provider} keys: ${name}_FILE names no file (${file})`);
     keys = split(fs.readFileSync(file, 'utf8'));
   }
   return [...new Set(keys.map((k) => k.trim()).filter(Boolean))];

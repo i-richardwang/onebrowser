@@ -13,7 +13,7 @@ import { utcMonth } from './month.js';
  */
 export const defaults = {
   apiBase: 'https://api.onkernel.com',
-  monthlyHours: 80, // headless browser hours a month that the free plan's credits pay for, rounded down
+  monthlyHours: 80, // headless browser hours a month that the free plan's $5 of credits pay for, rounded down
   price: { perHour: 1 }, // the quota is in headless browser hours, billed by the second
   billingDelayMs: 5 * 60_000, // seen within 10 s
 };
@@ -56,7 +56,7 @@ export async function quota(settings, apiKey) {
     usedMs += ofMonth.reduce((ms, s) => ms + (s.usage?.uptime_ms ?? 0), 0);
     if (!ofMonth.length || r.headers.get('x-has-more') !== 'true') break;
   }
-  return { remaining: settings.monthlyHours - usedMs / 3_600_000, unit: 'hours', renewsAt: month.next };
+  return { remaining: settings.monthlyHours - usedMs / 3_600_000, unit: 'hours', renewsAt: month.next, total: settings.monthlyHours };
 }
 
 /** Usage of the sessions among `sessions` that Kernel has deleted and finished billing, fetched by id */
