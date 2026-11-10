@@ -7,8 +7,8 @@ const firstLine = (e) => String(e.message).split('\n')[0];
 /**
  * A remote browser session (Account.openSession), used over CDP: cdpUrl with any client (it may carry the API
  * key: never log it), or connect() / newPage() with Playwright. This process closes it maxDurationMs after it was
- * opened; one whose process died is ended by its provider idleTimeoutSec (at least its minIdleTimeoutSec) after
- * its client left.
+ * opened, or when its provider ends it at its maxSessionMs if sooner; one whose process died is ended by its
+ * provider idleTimeoutSec (at least its minIdleTimeoutSec) after its client left.
  * account: the Account it is billed to; openedAt: when it was asked for; closedAt: when its provider released
  * it, null until then.
  */

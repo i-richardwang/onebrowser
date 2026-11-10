@@ -1,6 +1,8 @@
 import { QuotaError } from '../errors.js';
 import { json } from './http.js';
 
+const TTL_SEC = { min: 30, max: 3600 }; // what Firecrawl takes for ttl; activityTtl has the same maximum
+
 /**
  * Firecrawl's Browser Sandbox (https://docs.firecrawl.dev/features/browser). A session browses from a US ISP IP
  * by default, a different one per session; proxyCountry selects Firecrawl's location in that country (location).
@@ -15,9 +17,8 @@ export const defaults = {
   apiBase: 'https://api.firecrawl.dev/v2',
   price: { perHour: 120, stepSec: 30, minSec: 60 }, // credits: 2 a minute, in whole credits rounded up, at least 1 minute
   billingDelayMs: 5 * 60_000, // seen within 10 s
+  maxSessionMs: TTL_SEC.max * 1000, // ttl's maximum
 };
-
-const TTL_SEC = { min: 30, max: 3600 }; // what Firecrawl takes for ttl; activityTtl has the same maximum
 
 const headers = (apiKey) => ({ Authorization: `Bearer ${apiKey}` });
 

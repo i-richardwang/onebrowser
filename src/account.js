@@ -1,7 +1,7 @@
 import { sessionCost } from './cost.js';
 import { fingerprint } from './credentials.js';
 import { QuotaError } from './errors.js';
-import { sessionMsAtMost, sessionOptions } from './options.js';
+import { openMsAtMost, sessionMsAtMost, sessionOptions } from './options.js';
 import { Session } from './session.js';
 
 /**
@@ -47,7 +47,7 @@ export class Account {
       if (e instanceof QuotaError) throw e;
       throw new Error(`failed to create a ${this.provider} session: ${e.message}`);
     }
-    const session = new Session({ account: this, remote, openedAt, maxDurationMs: o.maxDurationMs, release: (s) => this.#release(s) });
+    const session = new Session({ account: this, remote, openedAt, maxDurationMs: openMsAtMost(o, this.#settings), release: (s) => this.#release(s) });
     try {
       this.#ledger().opened({ provider: this.provider, account: this.id, id: session.id, client: this.#client, openedAt, endsBy: openedAt + sessionMsAtMost(o, this.#settings) });
     } catch (e) {

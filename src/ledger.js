@@ -13,7 +13,8 @@ CREATE TABLE sessions (
   client        TEXT NOT NULL,            -- the program that opened it (OneBrowser's client)
   opened_at     TEXT NOT NULL,            -- when it was asked for; its provider created it right after
   ends_by       TEXT NOT NULL,            -- when it has ended at the latest, whatever becomes of its process
-  closed_at     TEXT,                     -- when its provider released it; empty until then, and if it never was
+  closed_at     TEXT,                     -- when it ended: when its provider released it, ends_by at the latest; empty
+                                          -- until then, and if it never was released
   duration_ms   INTEGER,                  -- the provider's record, once the session has ended
   proxy_bytes   INTEGER,                  -- proxy traffic in the provider's record
   synced_at     TEXT,                     -- when the provider's record was stored; empty = not yet
@@ -127,8 +128,9 @@ export class Ledger {
     this.#q('INSERT INTO sessions (provider, account, id, client, opened_at, ends_by) VALUES (?,?,?,?,?,?)').run(provider, account, id, client, iso(openedAt), iso(endsBy));
   }
 
+  /** The session was released at closedAt (ms): it ended then, unless its provider had ended it before (ends_by) */
   closed({ account, id, closedAt }) {
-    this.#q('UPDATE sessions SET closed_at=? WHERE account=? AND id=? AND closed_at IS NULL').run(iso(closedAt), account, id);
+    this.#q('UPDATE sessions SET closed_at=MIN(?, ends_by) WHERE account=? AND id=? AND closed_at IS NULL').run(iso(closedAt), account, id);
   }
 
   /** The provider's sessions without an account (recorded before schema 3) are `account`'s: the provider's only one */

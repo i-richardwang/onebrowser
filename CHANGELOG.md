@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+- Provider `browserbase`: [Browserbase](https://www.browserbase.com), with its residential proxy for `proxyCountry` (paid plans) and the plan's browser hours (`monthlyHours`) as the quota.
+- Provider `browserless`: [Browserless](https://www.browserless.io)'s cloud browsers, a session being one CDP connection, with its residential proxy for `proxyCountry` and its units as the quota.
+- `maxSessionMs`: the longest session a provider gives, whatever `maxDurationMs` asks for, a setting like `minIdleTimeoutSec`: Lightpanda's 15 minutes, the most Firecrawl's (1 h) and Browserbase's (6 h) APIs take, and the plan's longest session at Browserless (default: the free plan's 2 minutes). A session is closed by its process then, and counted as lasting no longer: a Lightpanda session left open counts 15 minutes, not 16.
+
 ## 0.8.0
 
 - `quota()` has `total`: what the quota holds when whole, for showing how much of it is used. Firecrawl reports its plan's credits; Kernel and Lightpanda hold `monthlyHours`; Steel, TinyFish, Hyperbrowser and Anchor take `includedQuota`, a new plan fact set to what their free plan or a new account's grant gives (as of 2026-11), which a program on another plan sets. `null` when neither the provider nor the settings say. The command line prints it (`3 of 10 hours left`).

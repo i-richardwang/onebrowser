@@ -12,7 +12,7 @@ import { apiKeyEnv, OneBrowser, QuotaError, sessionOptions } from '../src/index.
 import { ADAPTERS } from '../src/providers/index.js';
 import { utcMonth } from '../src/providers/month.js';
 
-const { anchor, firecrawl, hyperbrowser, kernel, lightpanda, steel, tinyfish } = ADAPTERS;
+const { anchor, browserbase, browserless, firecrawl, hyperbrowser, kernel, lightpanda, steel, tinyfish } = ADAPTERS;
 const options = { proxyCountry: null, idleTimeoutSec: 60, maxDurationMs: 15 * 60_000 };
 
 // The built-in providers have no API key here, so that only accounts the tests give exist
@@ -80,8 +80,9 @@ test('a OneBrowser names its client; settings and adapters must be for known pro
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', adapters: { free: fakeAdapter({ defaults: { apiBase: 'https://fake' } }) } }), /provider free: price must be/);
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { steel: { price: { perHour: 0.1, step: 60 } } } }), /provider steel: price must be/);
   assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { steel: { billingDelayMs: -1 } } }), /provider steel: billingDelayMs must be a number ≥ 0/);
+  assert.throws(() => new OneBrowser({ client: 'x', ledgerPath: ':memory:', providers: { steel: { maxSessionMs: 0 } } }), /provider steel: maxSessionMs must be a number > 0/);
   const b = new OneBrowser({ client: 'x', ledgerPath: ':memory:' });
-  assert.deepEqual(b.providers, ['tinyfish', 'steel', 'hyperbrowser', 'lightpanda', 'kernel', 'anchor', 'firecrawl']);
+  assert.deepEqual(b.providers, ['tinyfish', 'steel', 'hyperbrowser', 'lightpanda', 'kernel', 'anchor', 'firecrawl', 'browserbase', 'browserless']);
   assert.deepEqual([b.accounts(), b.accounts('steel')], [[], []]);
   assert.throws(() => b.accounts('nope'), /unknown provider nope/);
 });
@@ -162,7 +163,7 @@ test('a session is created with the provider\'s settings, the account\'s API key
   const adapter = fakeAdapter({ defaults: { ...FAKE_DEFAULTS, region: 'eu' } });
   const b = browsersWith(adapter, { providers: { fake: { apiKeys: ['key'], apiBase: 'https://other' } } });
   const s = await account(b).openSession({ proxyCountry: 'DE' });
-  assert.deepEqual(adapter.created, [{ settings: { ...FAKE_DEFAULTS, apiBase: 'https://other', region: 'eu', price: fullPrice(FAKE_DEFAULTS.price), minIdleTimeoutSec: 0 }, apiKey: 'key', options: { ...options, proxyCountry: 'DE' } }]);
+  assert.deepEqual(adapter.created, [{ settings: { ...FAKE_DEFAULTS, apiBase: 'https://other', region: 'eu', price: fullPrice(FAKE_DEFAULTS.price), minIdleTimeoutSec: 0, maxSessionMs: Infinity }, apiKey: 'key', options: { ...options, proxyCountry: 'DE' } }]);
   assert.deepEqual([s.account.id, s.id, s.egress, s.cdpUrl, s.closedAt], [FAKE, 's1', 'fake IP', 'wss://fake/cdp', null]);
   const [open] = b.usage({ since: 0 });
   assert.deepEqual([open.provider, open.account, open.client, open.sessions, open.untimed, open.unsynced], ['fake', FAKE, 'test', 1, 1, 1]);
@@ -225,6 +226,20 @@ test('a session ends after maxDurationMs, and disposing of the OneBrowser closes
   await b[Symbol.asyncDispose](); // what `await using` calls
   assert.ok(long.closedAt);
   assert.deepEqual(adapter.released, ['s1', 's2']);
+});
+
+test("a provider's maxSessionMs bounds a session whatever maxDurationMs asks for: this process closes it then, and it lasted and costs no more", async () => {
+  const b = browsersWith(fakeAdapter({ defaults: { ...FAKE_DEFAULTS, maxSessionMs: 5 * 60_000 } }));
+  assert.equal(account(b).maxSessionCost({}), 5); // 5 credits by the minute, not the 16 of 15 min and 60 s idle
+  assert.equal(account(b).maxSessionCost({ maxDurationMs: 90_000, idleTimeoutSec: 30 }), 2);
+  const brief = browsersWith(fakeAdapter(), { providers: { fake: { apiKeys: ['key'], maxSessionMs: 20 } } });
+  const s = await account(brief).openSession();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.ok(s.closedAt);
+  const [recorded] = brief.sessions({ since: 0 });
+  assert.equal(recorded.closedAt, recorded.endsBy); // released a moment after it had ended
+  assert.equal(recorded.endsBy - recorded.openedAt, 20);
+  await Promise.all([b.close(), brief.close()]);
 });
 
 test('a release in progress when the OneBrowser closes is awaited, not repeated', async () => {
@@ -512,19 +527,19 @@ test('Lightpanda quota is the monthly hours less the ledger\'s session time of t
   const closed = await lp.openSession();
   t.mock.timers.setTime(minutes(6));
   await closed.close(); // 6 minutes
-  await lp.openSession(); // never closed: its process was killed, so it lasted 16 minutes at most
+  await lp.openSession(); // never closed: its process was killed, so it lasted until Lightpanda closed it, at 15 minutes
   t.mock.timers.setTime(minutes(30));
-  await lp.openSession(); // open: 16 minutes at most, not billed yet
+  await lp.openSession(); // open: 15 minutes at most, not billed yet
   const q = await lp.readQuota();
-  assert.deepEqual([q.remaining, q.unbilled].map((h) => Number((h * 60).toFixed(6))), [(lightpanda.defaults.monthlyHours * 60) - 6 - 16 - 16, 16]);
-  // with a 20-minute billing delay, a session never closed (it ended by minute 16) is not billed by a reading at
+  assert.deepEqual([q.remaining, q.unbilled].map((h) => Number((h * 60).toFixed(6))), [(lightpanda.defaults.monthlyHours * 60) - 6 - 15 - 15, 15]);
+  // with a 20-minute billing delay, a session never closed (it ended by minute 15) is not billed by a reading at
   // minute 30: it counts as not billed yet, and only so
   const delayed = new OneBrowser({ client: 'test', ledgerPath: ':memory:', providers: { lightpanda: { apiKeys: ['tok'], billingDelayMs: 20 * 60_000 } } });
   t.mock.timers.setTime(start);
   await account(delayed, 'lightpanda').openSession();
   t.mock.timers.setTime(minutes(30));
   const d = await account(delayed, 'lightpanda').readQuota();
-  assert.deepEqual([d.remaining, d.unbilled].map((h) => Number((h * 60).toFixed(6))), [(lightpanda.defaults.monthlyHours * 60) - 16, 16]);
+  assert.deepEqual([d.remaining, d.unbilled].map((h) => Number((h * 60).toFixed(6))), [(lightpanda.defaults.monthlyHours * 60) - 15, 15]);
   await Promise.all([browsers.close(), delayed.close()]);
 });
 
@@ -634,4 +649,87 @@ test('a Firecrawl session takes its timeouts in whole seconds, ttl from 30 s to 
   assert.deepEqual(q, { remaining: 1380, unit: 'credits', renewsAt: Date.parse(period.billingPeriodEnd), total: 1000 });
   const { value: unrenewed } = await withFetch(() => ({ body: { success: true, data: { ...period, billingPeriodEnd: null } } }), () => firecrawl.quota(settings, 'key'));
   assert.equal(unrenewed.renewsAt, null);
+});
+
+test('a Browserbase session takes its timeout in whole seconds, from 1 min to 6 h, without recording or logging, and is released; 402 is what the plan does not pay for; ended sessions report their usage', async () => {
+  const settings = browserbase.defaults;
+  const created = { id: 'b1', status: 'RUNNING', connectUrl: 'wss://connect.usw2.browserbase.com/?signingKey=x' };
+  const { requests } = await withFetch(
+    () => ({ body: created }),
+    async () => {
+      assert.deepEqual(await browserbase.createSession(settings, 'key', { ...options, proxyCountry: 'DE' }), { id: 'b1', cdpUrl: created.connectUrl, egress: 'proxy DE' });
+      assert.deepEqual(await browserbase.createSession(settings, 'key', { ...options, maxDurationMs: 10_500 }), { id: 'b1', cdpUrl: created.connectUrl, egress: 'datacenter IP' });
+      await browserbase.createSession(settings, 'key', { ...options, maxDurationMs: 90_500 });
+      await browserbase.createSession(settings, 'key', { ...options, maxDurationMs: 12 * 3_600_000 });
+      await browserbase.releaseSession(settings, 'key', { id: 'b1' });
+    },
+  );
+  const post = (body) => ({ method: 'POST', url: `${settings.apiBase}/sessions`, body: { ...body, browserSettings: { recordSession: false, logSession: false } } });
+  assert.deepEqual(requests, [
+    post({ timeout: 900, proxies: [{ type: 'browserbase', geolocation: { country: 'DE' } }] }),
+    post({ timeout: 60 }),
+    post({ timeout: 91 }),
+    post({ timeout: 21_600 }),
+    { method: 'POST', url: `${settings.apiBase}/sessions/b1`, body: { status: 'REQUEST_RELEASE' } },
+  ]);
+  const refusal = { statusCode: 402, error: 'Payment Required', message: 'Proxies are not included in the free plan.' };
+  await withFetch(() => ({ status: 402, body: refusal }), () => assert.rejects(browserbase.createSession(settings, 'key', options), QuotaError));
+  await withFetch(() => ({ status: 429, body: { statusCode: 429 } }), () => assert.rejects(browserbase.createSession(settings, 'key', options), /HTTP 429/));
+
+  const records = {
+    done: { status: 'COMPLETED', startedAt: '2026-11-10T11:51:11.39+00:00', endedAt: '2026-11-10T11:51:33.203+00:00', proxyBytes: 2048 },
+    late: { status: 'TIMED_OUT', startedAt: '2026-11-10T11:51:36.682+00:00', endedAt: '2026-11-10T11:52:37.55+00:00', proxyBytes: 0 },
+    running: { status: 'RUNNING', startedAt: '2026-11-10T11:53:26.882+00:00', proxyBytes: 0 },
+  };
+  const { value: usage } = await withFetch(
+    (url) => ({ body: records[new URL(url).pathname.split('/').pop()] }),
+    () => browserbase.sessionUsage(settings, 'key', ['done', 'late', 'running'].map((id) => ({ id }))),
+  );
+  assert.deepEqual(usage, [
+    { id: 'done', durationMs: 21_813, proxyBytes: 2048 },
+    { id: 'late', durationMs: 60_868, proxyBytes: 0 },
+  ]);
+});
+
+test("Browserbase quota is the plan's monthly hours less the browser minutes of the key's projects", async () => {
+  const settings = { ...browserbase.defaults, monthlyHours: 100 };
+  const minutes = { p1: 90, p2: 30 };
+  const { value: q, requests } = await withFetch(
+    (url) => (url.endsWith('/projects') ? { body: [{ id: 'p1' }, { id: 'p2' }] } : { body: { browserMinutes: minutes[url.split('/').at(-2)], proxyBytes: 0 } }),
+    () => browserbase.quota(settings, 'key'),
+  );
+  assert.deepEqual(q, { remaining: 98, unit: 'hours', total: 100 });
+  assert.deepEqual(requests.map((r) => r.url.slice(settings.apiBase.length)), ['/projects', '/projects/p1/usage', '/projects/p2/usage']);
+});
+
+test("a Browserless session is a CDP URL with the token and its timeout, the plan's longest session at most, and a sticky residential proxy for a country; its sessions are timed by the ledger; its quota is the units left", async () => {
+  const settings = browserless.defaults;
+  const a = await browserless.createSession(settings, 'tok', { ...options, maxDurationMs: 90_000.5 });
+  const b = await browserless.createSession(settings, 'tok', { ...options, proxyCountry: 'DE' });
+  const c = await browserless.createSession({ ...settings, connectBase: 'wss://production-lon.browserless.io/stealth', maxSessionMs: 30 * 60_000 }, 'tok', options);
+  assert.notEqual(a.id, b.id);
+  assert.deepEqual([a.cdpUrl, a.egress], [`${settings.connectBase}?token=tok&timeout=90001`, 'datacenter IP']);
+  assert.deepEqual([b.cdpUrl, b.egress], [`${settings.connectBase}?token=tok&timeout=120000&proxy=residential&proxyCountry=de&proxySticky=true`, 'proxy DE']);
+  assert.equal(c.cdpUrl, 'wss://production-lon.browserless.io/stealth?token=tok&timeout=900000');
+
+  const now = Date.now();
+  const at = (secondsAgo) => new Date(now - secondsAgo * 1000).toISOString();
+  const usage = await browserless.sessionUsage(settings, 'tok', [
+    { id: 'closed', openedAt: at(300), closedAt: at(255) },
+    { id: 'open', openedAt: at(60), closedAt: null }, // may still be running
+    { id: 'left', openedAt: at(300), closedAt: null }, // its process was killed; past 2 minutes, Browserless has ended it
+  ]);
+  assert.deepEqual(usage, [
+    { id: 'closed', durationMs: 45_000, proxyBytes: null },
+    { id: 'left', durationMs: null, proxyBytes: null },
+  ]);
+
+  const answer = { plan: { type: 'cloud-unit-based', name: 'free' }, units: { included: 1000, used: 3, remaining: 991 }, billingPeriod: { start: '2026-11-10T10:48:33.000Z', end: '2026-12-10T10:48:33.000Z' } };
+  const { value: q, requests } = await withFetch(() => ({ body: answer }), () => browserless.quota(settings, 'tok'));
+  assert.deepEqual(q, { remaining: 991, unit: 'units', renewsAt: Date.parse(answer.billingPeriod.end), total: 1000 });
+  assert.deepEqual(requests.map((r) => r.url), [`${settings.usageUrl}?token=tok`]);
+
+  const browsers = new OneBrowser({ client: 'test', ledgerPath: ':memory:', providers: { browserless: { apiKeys: ['tok'] } } });
+  assert.equal(account(browsers, 'browserless').maxSessionCost(), 4); // 2 minutes at most, whatever maxDurationMs asks for
+  await browsers.close();
 });

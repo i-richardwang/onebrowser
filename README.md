@@ -26,7 +26,7 @@ await browsers.close();
 
 Choosing an account, capping sessions and stopping before a quota runs out are the program's policy. onebrowser opens the sessions it is asked for and gives the program what it needs to decide: the accounts it has keys for, what each quota has left, what a session costs at most, and `QuotaError` when a provider refuses a session for the account's quota.
 
-Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbrowser](https://hyperbrowser.ai), [Lightpanda](https://lightpanda.io), [Kernel](https://www.kernel.sh), [Anchor Browser](https://anchorbrowser.io) and [Firecrawl](https://www.firecrawl.dev); a program can add its own (see [Adding a provider](#adding-a-provider)). Node 22.13 or later.
+Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbrowser](https://hyperbrowser.ai), [Lightpanda](https://lightpanda.io), [Kernel](https://www.kernel.sh), [Anchor Browser](https://anchorbrowser.io), [Firecrawl](https://www.firecrawl.dev), [Browserbase](https://www.browserbase.com) and [Browserless](https://www.browserless.io); a program can add its own (see [Adding a provider](#adding-a-provider)). Node 22.13 or later.
 
 ## Interface
 
@@ -38,7 +38,7 @@ Built in: [Steel](https://steel.dev), [TinyFish](https://tinyfish.ai), [Hyperbro
 | `env` | The variables it reads the API keys (see [Accounts](#accounts)) and the ledger's place (see [The ledger](#the-ledger)) from; default: `process.env` |
 | `envFile` | An env file whose variables it reads under those set in `env`, parsed as Node parses env files; a variable set but empty is unset. They stay out of the process's environment, so a program's child processes do not see the keys |
 | `ledgerPath` | SQLite file of the ledger (default below; `':memory:'` for tests). Opened when first needed |
-| `providers` | Settings per provider name, on top of its adapter's `defaults`: `apiKeys` (see [Accounts](#accounts)), `price`, `billingDelayMs`, `minIdleTimeoutSec` (see [Quota](#quota)) and the adapter's own (API base URLs, plan facts such as `monthlyHours` and `includedQuota`) |
+| `providers` | Settings per provider name, on top of its adapter's `defaults`: `apiKeys` (see [Accounts](#accounts)), `price`, `billingDelayMs`, `minIdleTimeoutSec`, `maxSessionMs` (see [Quota](#quota)) and the adapter's own (API base URLs, plan facts such as `monthlyHours` and `includedQuota`) |
 | `adapters` | Further adapters by provider name, or replacements of built-in ones |
 
 | Method | |
@@ -74,7 +74,7 @@ A session and a `OneBrowser` are async-disposable: `await using session = await 
 |---|---|---|
 | `proxyCountry` | `null` | A country code: the provider's proxy in that country. `null`: its default egress |
 | `idleTimeoutSec` | 60 | A session whose client is gone (its process was killed) ends this long after at the latest, or after the provider's `minIdleTimeoutSec` if longer. At least 30 (twice the keep-alive interval) |
-| `maxDurationMs` | 15 min | The session ends this long after it was opened at the latest: this process closes it then, and the provider's own limit is set to it where its API takes one |
+| `maxDurationMs` | 15 min | The session ends this long after it was opened at the latest, or after the provider's `maxSessionMs` if shorter: this process closes it then, and the provider's own limit is set to it where its API takes one |
 
 `sessionOptions(options)` returns them with the defaults filled in and throws when one is unknown or out of range, so that a program can check its configuration before it opens any session.
 
@@ -85,16 +85,18 @@ How each provider meets them:
 | `steel` | residential proxy | `inactivityTimeout` (no CDP commands) | `timeout` |
 | `tinyfish` | residential proxy | `timeout_seconds` (no CDP commands) | this process only |
 | `hyperbrowser` | residential proxy, paid plans | at once: a session ends with its CDP connection | `timeoutMinutes`, in whole minutes |
-| `lightpanda` | its datacenter pool in that country | at once: a session is its CDP connection | Lightpanda's own limit is 15 min |
+| `lightpanda` | its datacenter pool in that country | at once: a session is its CDP connection | this process only; Lightpanda closes a connection after 15 min (`maxSessionMs`) |
 | `kernel` | not supported (throws) | `timeout_seconds` after the CDP client left; until then a disconnected session stays in standby, counting toward the plan's concurrent browsers | this process only |
 | `anchor` | residential proxy | `idle_timeout` after the last CDP connection left, in whole minutes rounded down (at least 1) | `max_duration`, in whole minutes |
-| `firecrawl` | its `location` in that country (default: the US) | `activityTtl` (no CDP commands), in whole seconds rounded down, at most 1 h | `ttl`, in whole seconds, at least 30 s and at most 1 h |
+| `firecrawl` | its `location` in that country (default: the US) | `activityTtl` (no CDP commands), in whole seconds rounded down, at most 1 h | `ttl`, in whole seconds, at least 30 s and at most 1 h (`maxSessionMs`) |
+| `browserbase` | residential proxy, paid plans | at once: a session ends with its CDP connection | `timeout`, in whole seconds, at least 1 min and at most 6 h (`maxSessionMs`) |
+| `browserless` | residential proxy, one IP for the session | at once: a session is its CDP connection | `timeout`, at most the plan's longest session (`maxSessionMs`, default: the free plan's 2 min) |
 
 ### Quota
 
-`quota()` is the last reading less `unbilled`: what the ledger's sessions of the account that the reading does not show cost at the provider's `price`. A reading shows the sessions that ended `billingDelayMs` before it; the others are open ones, counted as lasting as long as they can (`maxDurationMs`, then `idleTimeoutSec`, at least the provider's `minIdleTimeoutSec`), and those ended since, counted as long as they lasted. So each session counts once from when its provider has created it, whichever program on the machine opened it, and a program can check before each session that the account pays for it (`maxSessionCost`). A provider that bills a session while it runs has part of it counted twice, on the safe side. Not counted: sessions opened through another machine's ledger, until the provider bills them, and proxy traffic billed by the GB.
+`quota()` is the last reading less `unbilled`: what the ledger's sessions of the account that the reading does not show cost at the provider's `price`. A reading shows the sessions that ended `billingDelayMs` before it; the others are open ones, counted as lasting as long as they can (`maxDurationMs`, then `idleTimeoutSec`, at least the provider's `minIdleTimeoutSec`; its `maxSessionMs` at most), and those ended since, counted as long as they lasted. So each session counts once from when its provider has created it, whichever program on the machine opened it, and a program can check before each session that the account pays for it (`maxSessionCost`). A provider that bills a session while it runs has part of it counted twice, on the safe side. Not counted: sessions opened through another machine's ledger, until the provider bills them, and proxy traffic billed by the GB.
 
-`price` is in the quota's unit: `perHour`, `perSession` (default 0), the session time billed in whole `stepSec`, rounded up (default 1), and at least `minSec` (default 0). Where a provider does not document its rounding, the adapter takes the minute. `renewsAt` (ms) is when the quota renews by itself; `null` when only a top-up renews it. `total` is what the quota holds when whole, for showing how much of it is used: the plan's as the provider reports it, else the adapter's plan facts (`monthlyHours`, or `includedQuota`: the free plan's, or the grant a new account starts with); `null` when neither says. A top-up can leave `remaining` above it. `price`, `billingDelayMs` and the plan facts are settings: a program on another plan sets its own.
+`price` is in the quota's unit: `perHour`, `perSession` (default 0), the session time billed in whole `stepSec`, rounded up (default 1), and at least `minSec` (default 0). Where a provider does not document its rounding, the adapter takes the minute. `renewsAt` (ms) is when the quota renews by itself; `null` when only a top-up renews it. `total` is what the quota holds when whole, for showing how much of it is used: the plan's as the provider reports it, else the adapter's plan facts (`monthlyHours`, or `includedQuota`: the free plan's, or the grant a new account starts with); `null` when neither says. A top-up can leave `remaining` above it. `maxSessionMs` is the longest session a provider gives, whatever `maxDurationMs` asks for: its API's limit, or the plan's. `price`, `billingDelayMs`, `maxSessionMs` and the plan facts are settings: a program on another plan sets its own.
 
 | Provider | Quota, unit | `total` | Read from | `price` | `billingDelayMs` |
 |---|---|---|---|---|---|
@@ -105,6 +107,8 @@ How each provider meets them:
 | `kernel` | browser hours of the calendar month (`monthlyHours`, default: what the free plan's credits pay for), counted from the first of the month, 00:00 UTC | `monthlyHours`: 80, what the free plan's $5 a month pays for | the uptime of the account's sessions this month, from `GET /browsers` (Kernel has no API for what its credits leave); a session refused with 403 (spending cap) throws `QuotaError` | 1 per browser hour, by the second | 5 min |
 | `anchor` | credits | `includedQuota`: 5, the free plan's each month | `GET /v1/billing`; a session refused with 402 throws `QuotaError` | 0.01 a session and 0.15 an hour, by the minute: above what its sessions' records bill (its docs: 0.05 an hour) | 5 min |
 | `firecrawl` | credits; the plan's credits renew at the end of each billing period | the plan's credits (`planCredits`), as read | [`GET /v2/team/credit-usage`](https://docs.firecrawl.dev/api-reference/endpoint/credit-usage); a session refused with 402 throws `QuotaError` | 2 a minute, in 30 s steps, at least a minute | 5 min |
+| `browserbase` | browser hours of the plan (`monthlyHours`, default: the free plan's) | `monthlyHours`: 1 | the browser minutes of the key's projects, from [`GET /v1/projects/{id}/usage`](https://docs.browserbase.com/reference/api/get-project-usage) (Browserbase's API says neither what the plan includes nor when its hours renew); a session refused with 402 throws `QuotaError` | 1 per browser hour, by the minute, at least one | 5 min |
+| `browserless` | units; they renew at the end of each billing period | the plan's units (`units.included`), as read | [`GET /v1/account/usage`](https://docs.browserless.io/overview/unit-consumption) | 1 for every 30 s | 5 min |
 
 Every provider read from its API showed a session's cost within about a minute of its end (2026-11); `billingDelayMs` leaves room for more.
 
@@ -137,7 +141,7 @@ npx onebrowser usage --json --env-file .env
 
 Write `src/providers/<name>.js` and register it in `ADAPTERS` (`src/providers/index.js`, where the contract is):
 
-- `defaults`: `price`, `billingDelayMs`, `minIdleTimeoutSec` if the provider takes no idle timeout as short as asked (see [Quota](#quota)), and its own settings (API base URLs, plan facts).
+- `defaults`: `price`, `billingDelayMs`, `minIdleTimeoutSec` if the provider takes no idle timeout as short as asked, `maxSessionMs` if it ends a session after a time of its own (see [Quota](#quota)), and its own settings (API base URLs, plan facts).
 - `createSession(settings, apiKey, { proxyCountry, idleTimeoutSec, maxDurationMs }) → { id, cdpUrl, egress }`: maps the session options onto the provider's parameters; throws `QuotaError` when the provider refuses the session for the account's quota.
 - `releaseSession(settings, apiKey, session)`.
 - `sessionUsage(settings, apiKey, [{ id, openedAt, closedAt }]) → [{ id, durationMs, proxyBytes }]`: the record of those sessions that have ended: the provider's own, or the ledger's timing for a provider whose records its API key cannot read.

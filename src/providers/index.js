@@ -1,5 +1,7 @@
 import { fullPrice } from '../cost.js';
 import * as anchor from './anchor.js';
+import * as browserbase from './browserbase.js';
+import * as browserless from './browserless.js';
 import * as firecrawl from './firecrawl.js';
 import * as hyperbrowser from './hyperbrowser.js';
 import * as kernel from './kernel.js';
@@ -13,6 +15,7 @@ import * as tinyfish from './tinyfish.js';
  *     price               what its sessions cost, in the unit of its quota (cost.js)
  *     billingDelayMs      how long after a session has ended its quota reading shows it, at the latest
  *     minIdleTimeoutSec   the shortest idle timeout it takes (default 0)
+ *     maxSessionMs        the longest session it gives, whatever maxDurationMs asks for (default: no limit)
  *     and its own         API base URLs, plan facts such as monthlyHours or includedQuota (what the plan, or
  *                         the free grant, puts in the quota when the provider does not say)
  *   createSession(settings, apiKey, { proxyCountry, idleTimeoutSec, maxDurationMs }) → { id, cdpUrl, egress }
@@ -27,7 +30,7 @@ import * as tinyfish from './tinyfish.js';
  * Every function throws when it fails. Requests go through http.js, which throws HttpError for a status other
  * than 2xx.
  */
-export const ADAPTERS = { tinyfish, steel, hyperbrowser, lightpanda, kernel, anchor, firecrawl };
+export const ADAPTERS = { tinyfish, steel, hyperbrowser, lightpanda, kernel, anchor, firecrawl, browserbase, browserless };
 
 const CONTRACT = ['createSession', 'releaseSession', 'sessionUsage', 'quota'];
 
@@ -38,13 +41,14 @@ export function checkAdapter(name, adapter) {
 }
 
 /** An adapter's settings with the defaults of those every adapter has; throws when one of them is missing or wrong */
-export function fullSettings(name, { price, billingDelayMs, minIdleTimeoutSec = 0, ...own }) {
+export function fullSettings(name, { price, billingDelayMs, minIdleTimeoutSec = 0, maxSessionMs = Infinity, ...own }) {
   const atLeast0 = (x) => Number.isFinite(x) && x >= 0;
   try {
     const full = fullPrice(price);
     if (!atLeast0(billingDelayMs)) throw new Error(`billingDelayMs must be a number ≥ 0, not ${billingDelayMs}`);
     if (!atLeast0(minIdleTimeoutSec)) throw new Error(`minIdleTimeoutSec must be a number ≥ 0, not ${minIdleTimeoutSec}`);
-    return { ...own, price: full, billingDelayMs, minIdleTimeoutSec };
+    if (!(typeof maxSessionMs === 'number' && maxSessionMs > 0)) throw new Error(`maxSessionMs must be a number > 0, not ${maxSessionMs}`);
+    return { ...own, price: full, billingDelayMs, minIdleTimeoutSec, maxSessionMs };
   } catch (e) {
     throw new Error(`provider ${name}: ${e.message}`);
   }
